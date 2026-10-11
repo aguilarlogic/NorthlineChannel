@@ -148,6 +148,37 @@ struct RampedGain
     }
 };
 
+// Smoothed plain value with the same deterministic ramp as RampedGain, for stages that need
+// the per-sample value themselves (cross-fades, mix). forEachSegment calls
+// fn (start, length, valueAtStart, valuePerSample) once per control segment.
+struct RampedValue
+{
+    Smoothed sm;
+    float from = 0.0f, to = 0.0f;
+
+    void prepare (double sampleRate, float ms) { sm.prepare (sampleRate, ms); }
+    void setTarget (float t) noexcept { sm.setTarget (t); }
+    void snap() noexcept { sm.snap(); from = to = sm.current; }
+    float target() const noexcept { return sm.target; }
+    // True when the value is constant (no ramp running and the smoother has arrived).
+    bool isConstant() const noexcept { return from == to && sm.current == sm.target && to == sm.target; }
+
+    template <typename Fn>
+    void forEachSegment (int n, uint32_t phase, Fn&& fn) noexcept
+    {
+        int i = 0;
+        while (i < n)
+        {
+            const int p = (int) ((phase + (uint32_t) i) % (uint32_t) kControlBlock);
+            if (p == 0) { sm.tick(); from = to; to = sm.current; }
+            const int len = std::min (n - i, kControlBlock - p);
+            const float d = (to - from) * (1.0f / (float) kControlBlock);
+            fn (i, len, from + d * (float) p, d);
+            i += len;
+        }
+    }
+};
+
 inline bool isFiniteAndSmall (float x) noexcept { return std::isfinite (x) && std::abs (x) < 1.0e6f; }
 
 // Orthonormal mid/side matrix (self-inverse, power preserving).

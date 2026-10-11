@@ -1,18 +1,21 @@
 #include "ToolCommon.h"
 #include <cstdlib>
 #include <new>
+#include <thread>
 
 namespace tool
 {
 std::atomic<bool> countAllocations { false };
 std::atomic<long long> allocationCount { 0 };
+std::thread::id countingThread;
 } // namespace tool
 
-// Count every heap allocation while the flag is set, so tests can prove the
-// audio path never allocates.
+// Count heap allocations made by the counting thread while the flag is set, so tests can prove
+// the audio path never allocates (other threads, e.g. JUCE's timer, are ignored).
 void* operator new (std::size_t size)
 {
-    if (tool::countAllocations.load (std::memory_order_relaxed)) tool::allocationCount.fetch_add (1, std::memory_order_relaxed);
+    if (tool::countAllocations.load (std::memory_order_relaxed) && std::this_thread::get_id() == tool::countingThread)
+        tool::allocationCount.fetch_add (1, std::memory_order_relaxed);
     if (void* p = std::malloc (size == 0 ? 1 : size)) return p;
     throw std::bad_alloc();
 }
@@ -79,6 +82,7 @@ static int snapshot (const juce::File& file, int preset)
 
 int main (int argc, char* argv[])
 {
+    tool::countingThread = std::this_thread::get_id();
     juce::ScopedJuceInitialiser_GUI juceInit;
     juce::StringArray args;
     for (int i = 1; i < argc; ++i) args.add (juce::String::fromUTF8 (argv[i]));

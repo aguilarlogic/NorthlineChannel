@@ -2,6 +2,7 @@
 
 #include "Presets.h"
 #include "dsp/ChannelStrip.h"
+#include <map>
 
 namespace nl
 {
@@ -11,12 +12,16 @@ class NorthlineProcessor : public juce::AudioProcessor,
                            private juce::Timer
 {
 public:
+    // Version written by getStateInformation. v1 sessions (original IDs) are migrated on load.
+    static constexpr int kStateVersion = 2;
+
     NorthlineProcessor();
     ~NorthlineProcessor() override;
 
     //==============================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
+    // Stereo or mono in and out, plus mono-in/stereo-out (the mono input feeds both channels).
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
@@ -49,32 +54,50 @@ public:
     void setOrder (const ChannelStrip::Order& order, bool recordUndo = true);
     void moveModule (int moduleId, int delta);
 
-    // Snapshots used by undo, A/B and presets.
+    // Snapshots used by undo, A/B and presets. They never contain transient parameters
+    // (monitor, listen, solo); applySnapshot leaves those untouched.
     juce::ValueTree makeSnapshot() const;
     void applySnapshot (const juce::ValueTree& snapshot);
 
     // Undo / redo (32 levels, includes module order).
     void pushUndoSnapshot();
-    bool canUndo() const { return undoPos > 0; }
-    bool canRedo() const { return undoPos + 1 < (int) undoStack.size(); }
+    bool canUndo() const;
+    bool canRedo() const;
     void undo();
     void redo();
 
     // A/B compare.
-    int getActiveSlot() const { return activeSlot; }
+    int getActiveSlot() const;
     void selectSlot (int slot);
     void copyActiveToOther();
 
-    // Presets.
+    // Presets. Loading a preset (or resetting) also resets the transient parameters.
     void loadFactoryPreset (int index);
     bool saveUserPreset (const juce::File& file, const juce::String& name);
     bool loadUserPreset (const juce::File& file);
     void resetToDefaults();
-    juce::String getPresetName() const { return presetName; }
-    const std::vector<int>& getFocus() const { return focus; }
 
-    float getUiScale() const { return uiScale; }
-    void setUiScale (float s) { uiScale = s; }
+    // UI accessors: thread-safe, they return copies.
+    juce::String getPresetName() const;
+    std::vector<int> getFocus() const;
+    float getUiScale() const;
+    void setUiScale (float s);
+
+    // Level Match (D1). Relearn restarts a Learn pass (or the Live tracking).
+    void relearnLevelMatch() { strip.relearnLevelMatch(); }
+    LevelMatchStatus getLevelMatchStatus() const noexcept { return strip.getLevelMatchStatus(); }
+
+    // Message-thread housekeeping, also driven by the processor's timer (10 Hz): reports a
+    // changed latency to the host and mirrors a learned Level Match trim into match_trim.
+    // Offline tools without a message loop call it directly.
+    void servicePendingWork();
+    void updateLatency();
+
+    // State schema migration (v1 -> v2), exposed for tests. The session variant takes the root
+    // tree (PARAM children, "AB" snapshots); the snapshot variant takes one property bag
+    // (preset files, A/B slots).
+    static void migrateSessionV1 (juce::ValueTree& root);
+    static void migrateSnapshotV1 (juce::ValueTree& snapshot);
 
     // Incremented whenever presets, undo or A/B change the whole state (UI refresh hint).
     std::atomic<int> stateGeneration { 0 };
@@ -85,22 +108,28 @@ private:
     void handleAsyncUpdate() override;
     void timerCallback() override;
     void applyValues (const std::vector<std::pair<int, float>>& values);
+    void resetTransientParams();
+    void afterWholeStateLoad();
+    void writeParameter (int index, float plain);
 
     juce::AudioProcessorValueTreeState apvts;
     std::array<juce::RangedAudioParameter*, P::count> params {};
     ChannelStrip strip;
     int preparedBlock = 512;
+    std::vector<float> scCopy[2]; // sidechain copy for mono-in layouts, where it shares a buffer channel with the output
 
+    // Non-parameter state. Guarded by stateLock, which the audio thread never takes.
+    mutable juce::CriticalSection stateLock;
     std::vector<juce::ValueTree> undoStack;
     int undoPos = -1;
-    bool applyingSnapshot = false;
-
     juce::ValueTree slots[2];
     int activeSlot = 0;
-
     juce::String presetName { "Init" };
     std::vector<int> focus;
     float uiScale = 1.0f;
+
+    std::atomic<int> applyingDepth { 0 }; // > 0 while a snapshot is being applied (no undo entries then)
+    uint32_t lastLearnedSerial = 0;       // message thread only
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NorthlineProcessor)
 };
