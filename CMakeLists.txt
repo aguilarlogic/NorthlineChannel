@@ -1,0 +1,79 @@
+cmake_minimum_required(VERSION 3.25)
+
+project(NorthlineChannel VERSION 1.0.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+add_subdirectory(external/JUCE)
+
+set(NL_FORMATS VST3 Standalone)
+if(APPLE)
+    list(APPEND NL_FORMATS AU)
+endif()
+
+# Sources shared by the plugin and the test/benchmark tool.
+set(NL_SOURCES
+    Source/PluginProcessor.cpp
+    Source/Params.cpp
+    Source/Presets.cpp
+    Source/dsp/ChannelStrip.cpp
+    Source/gui/PluginEditor.cpp
+    Source/gui/LookAndFeel.cpp
+    Source/gui/Widgets.cpp
+    Source/gui/ModulePanels.cpp
+    Source/gui/MasterPanel.cpp
+    Source/gui/TopBar.cpp)
+
+set(NL_DEFINITIONS
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_USE_XINPUT=0)
+
+juce_add_plugin(NorthlineChannel
+    COMPANY_NAME "Northline Audio"
+    COMPANY_WEBSITE "https://example.com"
+    BUNDLE_ID com.northlineaudio.channel
+    PLUGIN_MANUFACTURER_CODE Nrth
+    PLUGIN_CODE Nlch
+    FORMATS ${NL_FORMATS}
+    PRODUCT_NAME "Northline Channel"
+    DESCRIPTION "Zero-latency channel strip"
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    COPY_PLUGIN_AFTER_BUILD FALSE
+    VST3_CATEGORIES Fx Dynamics EQ
+    AU_MAIN_TYPE kAudioUnitType_Effect
+    NEEDS_WEB_BROWSER FALSE
+    NEEDS_CURL FALSE)
+
+target_sources(NorthlineChannel PRIVATE ${NL_SOURCES})
+target_include_directories(NorthlineChannel PRIVATE Source)
+target_compile_definitions(NorthlineChannel PUBLIC ${NL_DEFINITIONS})
+target_link_libraries(NorthlineChannel
+    PRIVATE
+        juce::juce_audio_utils
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags)
+
+# Console tool: unit tests, CPU benchmark, and benchmarking of any other VST3 for comparison.
+juce_add_console_app(NorthlineTool PRODUCT_NAME "NorthlineTool")
+target_sources(NorthlineTool PRIVATE tools/ToolMain.cpp tools/Tests.cpp tools/Bench.cpp ${NL_SOURCES})
+target_include_directories(NorthlineTool PRIVATE Source tools)
+target_compile_definitions(NorthlineTool PRIVATE ${NL_DEFINITIONS} JUCE_PLUGINHOST_VST3=1 NL_TOOL_BUILD=1)
+target_link_libraries(NorthlineTool
+    PRIVATE
+        juce::juce_audio_utils
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_lto_flags
+        juce::juce_recommended_warning_flags)
