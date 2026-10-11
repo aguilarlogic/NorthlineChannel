@@ -1,0 +1,140 @@
+name: release
+
+# Builds, validates, signs and packages a release when a version tag (v*) is pushed.
+# Signing steps run only when the corresponding secrets are configured (see docs/RELEASE.md);
+# without them the workflow still produces unsigned artefacts for testing.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  JUCE_TAG: "9.0.3"
+  PLUGINVAL_VERSION: "v1.0.4"
+
+jobs:
+  windows:
+    strategy:
+      matrix:
+        arch: [x64, ARM64]
+    runs-on: windows-latest
+    env:
+      NL_SIGN_MODE: ${{ secrets.NL_SIGN_MODE }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch JUCE and clap-juce-extensions
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE external/JUCE
+          git clone --depth 1 --recursive https://github.com/free-audio/clap-juce-extensions external/clap-juce-extensions
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.arch }}
+      - name: Build
+        run: cmake --build build --config Release --target NorthlineChannel_All NorthlineTool -- -m
+      - name: Tests (x64 only)
+        if: matrix.arch == 'x64'
+        run: build\NorthlineTool_artefacts\Release\NorthlineTool.exe test
+      - name: pluginval (x64 only)
+        if: matrix.arch == 'x64'
+        shell: bash
+        run: |
+          curl -sL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Windows.zip"
+          7z x pluginval.zip -opluginval
+          ./pluginval/pluginval.exe --strictness-level 10 --validate-in-process --output-dir pluginval-logs \
+            --validate "build/NorthlineChannel_artefacts/Release/VST3/Northline Channel.vst3"
+      - name: Sign binaries
+        if: env.NL_SIGN_MODE != ''
+        env:
+          NL_CERT_SHA1: ${{ secrets.NL_CERT_SHA1 }}
+          NL_AZURE_DLIB: ${{ secrets.NL_AZURE_DLIB }}
+          NL_AZURE_METADATA: ${{ secrets.NL_AZURE_METADATA }}
+        shell: pwsh
+        run: |
+          $bins = Get-ChildItem -Recurse build\NorthlineChannel_artefacts\Release -Include *.vst3,*.clap,*.exe -File | ForEach-Object FullName
+          ./packaging/windows/sign.ps1 -Paths $bins
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $arch = if ("${{ matrix.arch }}" -eq "ARM64") { "arm64" } else { "x64" }
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DAppVersion=${{ github.ref_name }}" "/DArch=$arch" `
+            "/DArtefacts=..\..\build\NorthlineChannel_artefacts\Release" packaging\windows\NorthlineChannel.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: |
+            dist/*
+            pluginval-logs/*
+
+  macos:
+    runs-on: macos-latest
+    env:
+      NL_DEV_ID_APP: ${{ secrets.NL_DEV_ID_APP }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch JUCE and clap-juce-extensions
+        run: |
+          git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE external/JUCE
+          git clone --depth 1 --recursive https://github.com/free-audio/clap-juce-extensions external/clap-juce-extensions
+      - name: Configure
+        run: cmake -S . -B build -G Xcode
+      - name: Build
+        run: cmake --build build --config Release --target NorthlineChannel_All NorthlineTool
+      - name: Tests
+        run: build/NorthlineTool_artefacts/Release/NorthlineTool test
+      - name: Validators
+        run: |
+          curl -sL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_macOS.zip"
+          unzip -q pluginval.zip -d pluginval
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/NorthlineChannel_artefacts/Release/AU/Northline Channel.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aufx Nlch Nrth
+          pluginval/pluginval.app/Contents/MacOS/pluginval --strictness-level 10 --validate-in-process \
+            --validate "build/NorthlineChannel_artefacts/Release/VST3/Northline Channel.vst3"
+      - name: Sign, package, notarize
+        if: env.NL_DEV_ID_APP != ''
+        env:
+          NL_DEV_ID_INSTALLER: ${{ secrets.NL_DEV_ID_INSTALLER }}
+          NL_NOTARY_PROFILE: northline-notary
+          NL_CERTS_P12: ${{ secrets.NL_CERTS_P12 }}
+          NL_CERTS_PASSWORD: ${{ secrets.NL_CERTS_PASSWORD }}
+          NL_NOTARY_APPLE_ID: ${{ secrets.NL_NOTARY_APPLE_ID }}
+          NL_NOTARY_TEAM_ID: ${{ secrets.NL_NOTARY_TEAM_ID }}
+          NL_NOTARY_PASSWORD: ${{ secrets.NL_NOTARY_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          security create-keychain -p ci "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          echo "$NL_CERTS_P12" | base64 --decode > certs.p12
+          security import certs.p12 -k "$KEYCHAIN" -P "$NL_CERTS_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KEYCHAIN"
+          xcrun notarytool store-credentials "$NL_NOTARY_PROFILE" --apple-id "$NL_NOTARY_APPLE_ID" \
+            --team-id "$NL_NOTARY_TEAM_ID" --password "$NL_NOTARY_PASSWORD"
+          bash packaging/macos/package.sh "${GITHUB_REF_NAME#v}" build/NorthlineChannel_artefacts/Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  draft-release:
+    needs: [windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artefacts
+      - name: Checksums
+        run: find artefacts -type f \( -name '*.exe' -o -name '*.pkg' \) -exec sha256sum {} \; > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            artefacts/**/*.exe
+            artefacts/**/*.pkg
+            SHA256SUMS.txt

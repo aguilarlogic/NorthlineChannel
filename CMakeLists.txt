@@ -1,12 +1,29 @@
 cmake_minimum_required(VERSION 3.25)
 
+# macOS: universal binary (Apple silicon + Intel). Set before project().
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
+
 project(NorthlineChannel VERSION 0.9.1 LANGUAGES C CXX)
+
+# CLAP through free-audio/clap-juce-extensions (JUCE 9.0.3 has no CLAP client of its own).
+# Enabled automatically when the checkout exists:
+#   git clone --recursive https://github.com/free-audio/clap-juce-extensions external/clap-juce-extensions
+set(NL_CLAP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/clap-juce-extensions")
+if(EXISTS "${NL_CLAP_DIR}/CMakeLists.txt")
+    option(NL_BUILD_CLAP "Build the CLAP plug-in" ON)
+else()
+    option(NL_BUILD_CLAP "Build the CLAP plug-in" OFF)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_subdirectory(external/JUCE)
+if(NL_BUILD_CLAP)
+    add_subdirectory("${NL_CLAP_DIR}" EXCLUDE_FROM_ALL)
+endif()
 
 set(NL_FORMATS VST3 Standalone)
 if(APPLE)
@@ -26,7 +43,7 @@ set(NL_DEFINITIONS
 
 juce_add_plugin(NorthlineChannel
     COMPANY_NAME "Northline Audio"
-    COMPANY_WEBSITE "https://example.com"
+    COMPANY_WEBSITE "https://example.com" # TODO(release): the real domain once registered (roadmap 11.6)
     BUNDLE_ID com.northlineaudio.channel
     PLUGIN_MANUFACTURER_CODE Nrth
     PLUGIN_CODE Nlch
@@ -42,7 +59,14 @@ juce_add_plugin(NorthlineChannel
     VST3_CATEGORIES Fx Dynamics EQ
     AU_MAIN_TYPE kAudioUnitType_Effect
     NEEDS_WEB_BROWSER FALSE
-    NEEDS_CURL FALSE)
+    NEEDS_CURL FALSE
+    HARDENED_RUNTIME_ENABLED TRUE)
+
+if(NL_BUILD_CLAP)
+    clap_juce_extensions_plugin(TARGET NorthlineChannel
+        CLAP_ID "com.northlineaudio.channel"
+        CLAP_FEATURES audio-effect equalizer compressor limiter distortion mono stereo)
+endif()
 
 target_sources(NorthlineChannel PRIVATE ${NL_SOURCES})
 target_include_directories(NorthlineChannel PRIVATE Source)

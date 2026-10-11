@@ -2,3 +2,6 @@ build/
 external/JUCE/
 *.user
 .vs/
+.claude/
+external/clap-juce-extensions/
+dist/
