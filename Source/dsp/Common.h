@@ -139,9 +139,10 @@ struct RampedGain
             const float d = (to - from) * (1.0f / (float) kControlBlock);
             for (int c = 0; c < numCh; ++c)
             {
-                float g = from + d * (float) p;
+                // The gain at each sample is computed from its position in the control segment,
+                // not accumulated, so splitting a segment across host blocks changes nothing (bit-exact).
                 float* x = io[c] + i;
-                for (int j = 0; j < len; ++j, g += d) x[j] *= g;
+                for (int j = 0; j < len; ++j) x[j] *= from + d * (float) (p + j);
             }
             i += len;
         }
@@ -150,7 +151,9 @@ struct RampedGain
 
 // Smoothed plain value with the same deterministic ramp as RampedGain, for stages that need
 // the per-sample value themselves (cross-fades, mix). forEachSegment calls
-// fn (start, length, valueAtStart, valuePerSample) once per control segment.
+// fn (start, length, base, slope, offset) once per control segment; the value at sample
+// start + j is base + slope * (offset + j), computed that way so it does not depend on how the
+// host blocks split the segment.
 struct RampedValue
 {
     Smoothed sm;
@@ -173,7 +176,7 @@ struct RampedValue
             if (p == 0) { sm.tick(); from = to; to = sm.current; }
             const int len = std::min (n - i, kControlBlock - p);
             const float d = (to - from) * (1.0f / (float) kControlBlock);
-            fn (i, len, from + d * (float) p, d);
+            fn (i, len, from, d, p);
             i += len;
         }
     }

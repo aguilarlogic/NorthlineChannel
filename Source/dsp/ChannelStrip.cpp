@@ -362,13 +362,13 @@ void ChannelStrip::inputStage (float* const* io, int numCh, int n)
         }
         else
         {
-            swapAmt.forEachSegment (n, phase, [&] (int s, int len, float v0, float dv)
+            swapAmt.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
             {
                 float* l = io[0] + s;
                 float* r = io[1] + s;
                 for (int j = 0; j < len; ++j)
                 {
-                    const float m = v0 + dv * (float) j, a = l[j], b = r[j];
+                    const float m = base + slope * (float) (offset + j), a = l[j], b = r[j];
                     l[j] = a * (1.0f - m) + b * m;
                     r[j] = b * (1.0f - m) + a * m;
                 }
@@ -411,16 +411,16 @@ void ChannelStrip::matchStage (float* const* io, int numCh, int n)
 
 void ChannelStrip::mixStage (float* const* io, int numCh, int n)
 {
-    mixAmt.forEachSegment (n, clock.phase, [&] (int s, int len, float v0, float dv)
+    mixAmt.forEachSegment (n, clock.phase, [&] (int s, int len, float base, float slope, int offset)
     {
-        if (v0 == 1.0f && dv == 0.0f) return;
+        if (base == 1.0f && slope == 0.0f) return;
         for (int c = 0; c < numCh; ++c)
         {
             float* wet = io[c] + s;
             const float* dry = tapDry[(size_t) c].data() + s;
             for (int j = 0; j < len; ++j)
             {
-                const float m = v0 + dv * (float) j;
+                const float m = base + slope * (float) (offset + j);
                 wet[j] = dry[j] + (wet[j] - dry[j]) * m;
             }
         }
