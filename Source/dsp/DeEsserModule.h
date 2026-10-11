@@ -34,7 +34,7 @@ public:
     // Detector level of one band in dBFS, for the scope.
     float getKeyLevelDb (int /*band*/) const noexcept { return -120.0f; } // TODO(ds)
 
-    void prepare (double sampleRate)
+    void prepare (double sampleRate, int /*maxBlock*/ = 4096)
     {
         fs = sampleRate;
         attackCoef = timeCoef (0.4f, fs);

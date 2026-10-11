@@ -86,7 +86,7 @@ public:
     // Latency the HQ oversampler would add (fractional, minimum phase IIR).
     float oversamplerLatency() const { return oversampler ? oversampler->getLatencyInSamples() : 0.0f; }
 
-    void process (float* const* ch, int numCh, int n)
+    void process (float* const* ch, int numCh, int n, const float* const* /*key*/ = nullptr)
     {
         const int start = counter;
         counter += n;

@@ -20,10 +20,10 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
     channels = juce::jlimit (1, 2, numChannels);
 
     pre.prepare (fs, maxBlock);
-    gate.prepare (fs);
-    ds.prepare (fs);
-    eq.prepare (fs);
-    comp.prepare (fs);
+    gate.prepare (fs, maxBlock);
+    ds.prepare (fs, maxBlock);
+    eq.prepare (fs, maxBlock);
+    comp.prepare (fs, maxBlock);
 
     for (auto& f : moduleFade) f.prepare (fs, 10.0f);
     master.prepare (fs, maxBlock);
@@ -165,10 +165,10 @@ void ChannelStrip::runModule (int id, float* const* io, int numChannels, int n, 
 {
     switch (id)
     {
-        case modPre:  pre.process (io, numChannels, n); break;
+        case modPre:  pre.process (io, numChannels, n, k); break;
         case modGate: gate.process (io, numChannels, n, k); break;
         case modDs:   ds.process (io, numChannels, n, k); break;
-        case modEq:   eq.process (io, numChannels, n); break;
+        case modEq:   eq.process (io, numChannels, n, k); break;
         case modComp: comp.process (io, numChannels, n, k); break;
         default: break;
     }

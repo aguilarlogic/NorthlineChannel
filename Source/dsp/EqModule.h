@@ -57,7 +57,7 @@ public:
     // Current dynamic gain of one band in dB (0 when the band is static), for the display.
     float getDynGainDb (int /*band*/) const noexcept { return 0.0f; } // TODO(eq)
 
-    void prepare (double sampleRate)
+    void prepare (double sampleRate, int /*maxBlock*/ = 4096)
     {
         fs = sampleRate;
         for (auto& b : bands)
@@ -95,7 +95,7 @@ public:
         }
     }
 
-    void process (float* const* ch, int numCh, int n)
+    void process (float* const* ch, int numCh, int n, const float* const* /*key*/ = nullptr)
     {
         int i = 0;
         while (i < n)

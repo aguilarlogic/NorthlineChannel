@@ -26,7 +26,7 @@ public:
     // Detector (key) level in dBFS after the sidechain filters, for the scope.
     float getKeyLevelDb() const noexcept { return -120.0f; } // TODO(gate)
 
-    void prepare (double sampleRate)
+    void prepare (double sampleRate, int /*maxBlock*/ = 4096)
     {
         fs = sampleRate;
         detRelease = timeCoef (10.0f, fs);
