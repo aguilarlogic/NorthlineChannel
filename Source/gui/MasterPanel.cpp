@@ -14,15 +14,15 @@ MasterPanel::MasterPanel (NorthlineProcessor& p) : proc (p)
     const auto a = colours::master;
     inGain = add<Knob> (p, P::inGain, "Input", a);
     outGain = add<Knob> (p, P::outGain, "Output", a);
-    vuRef = add<Knob> (p, P::vuRef, "VU Ref", a);
-    phase = add<Chip> (p, P::inPhase, juce::String::fromUTF8 ("\xc3\x98 PHASE"), a);
+    vuRef = add<Knob> (p, P::opLevel, "Op Level", a);
+    phase = add<ChoiceBox> (p, P::inPolarity);
     vuSource = add<ChoiceBox> (p, P::vuSource);
     limOn = add<Chip> (p, P::limOn, "LIMIT", a);
-    lookahead = add<Chip> (p, P::limLookahead, "LOOKAHEAD", a);
-    lookahead->setTooltip ("Lookahead limiting (1.5 ms latency, reported to the host). Off = zero-latency brickwall");
+    lookahead = add<ChoiceBox> (p, P::limMode);
+    lookahead->setTooltip ("Limiter mode. Safety Clip: zero latency. Brickwall / True Peak: 1.5 ms lookahead, reported to the host");
     ceiling = add<Knob> (p, P::limCeiling, "Ceiling", a);
     limRelease = add<Knob> (p, P::limRelease, "Release", a);
-    match = add<Chip> (p, P::levelMatch, "LEVEL MATCH", a);
+    match = add<ChoiceBox> (p, P::matchMode);
     match->setTooltip ("Matches output loudness to input loudness so you judge processing, not volume");
     monitor = add<ChoiceBox> (p, P::monitor);
     for (auto* c : std::initializer_list<juce::Component*> { &inMeter, &outMeter, &vu, &limGr, &resetLoudness })
@@ -161,7 +161,7 @@ void MasterPanel::updateMeters (const MeterSummary& m)
     limGr.setGr (m.limGr);
 
     const int src = (int) std::lround (proc.param (P::vuSource)->convertFrom0to1 (proc.param (P::vuSource)->getValue()));
-    const float ref = proc.param (P::vuRef)->convertFrom0to1 (proc.param (P::vuRef)->getValue());
+    const float ref = proc.param (P::opLevel)->convertFrom0to1 (proc.param (P::opLevel)->getValue());
     float target;
     if (src == 2)
     {

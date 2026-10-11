@@ -5,7 +5,7 @@
 #include "DeEsserModule.h"
 #include "EqModule.h"
 #include "GateModule.h"
-#include "Limiter.h"
+#include "MasterSection.h"
 #include "Meters.h"
 #include "PreModule.h"
 #include <array>
@@ -42,13 +42,14 @@ public:
     SpscRing<MeterFrame>& meterFrames() noexcept { return frames; }
     SpscRing<StereoSample>& outputSamples() noexcept { return samples; }
     void setSampleStreamingEnabled (bool on) noexcept { streamSamples.store (on); }
+    MeterHub& meterHub() noexcept { return master.meters(); }
     double getSampleRate() const noexcept { return fs; }
     int getNumChannels() const noexcept { return channels; }
 
 private:
-    float pv (int index) const noexcept { return values[(size_t) index]->load (std::memory_order_relaxed); }
-    bool pb (int index) const noexcept { return pv (index) >= 0.5f; }
-    int pi (int index) const noexcept { return (int) std::lround (pv (index)); }
+    float pv (int index) const noexcept { return snap.f (index); }
+    bool pb (int index) const noexcept { return snap.on (index); }
+    int pi (int index) const noexcept { return snap.choice (index); }
 
     void readParams();
     bool moduleWantsMs (int id) const noexcept;
@@ -57,6 +58,7 @@ private:
     void resetModule (int id);
 
     std::array<std::atomic<float>*, P::count> values {};
+    ParamSnapshot snap; // plain values captured once per block
 
     double fs = 48000.0;
     int maxBlock = 512, channels = 2;
@@ -66,15 +68,13 @@ private:
     DeEsserModule ds;
     EqModule eq;
     CompModule comp;
-    Limiter limiter;
+    MasterSection master;
 
     std::array<Fade, numModules> moduleFade {};
     std::atomic<uint32_t> packedOrder { 0 };
 
     Smoothed inGain, outGain, matchGain;
-    Fade limFade;
     double matchInPow = 0.0, matchOutPow = 0.0, matchCoef = 0.0;
-    bool limLookaheadActive = false;
 
     std::vector<float> dry[2], key[2], keyMs[2];
     std::vector<StereoSample> sampleScratch;

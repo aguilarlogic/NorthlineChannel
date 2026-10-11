@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ParamSnapshot.h"
 #include "Saturation.h"
 #include <juce_dsp/juce_dsp.h>
 #include <vector>
@@ -19,6 +20,10 @@ struct PreParams
 class PreModule
 {
 public:
+    // Latency in samples. Must depend only on non-automatable settings (quality,
+    // lookahead), never on whether the module is on or on automatable parameters.
+    int latency() const noexcept { return 0; }
+
     void prepare (double sampleRate, int maxBlock)
     {
         fs = sampleRate;
@@ -278,4 +283,19 @@ private:
     std::vector<std::vector<float>> scratch;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
 };
+// Maps the parameter snapshot to PRE settings (owned by this module).
+inline PreParams readPreParams (const ParamSnapshot& p)
+{
+    PreParams pp;
+    pp.satOn = p.on (P::satOn);
+    pp.satType = std::min (p.choice (P::satType), 3); // TODO(pre): Tape / Tube / Transformer
+    pp.drive = p.f (P::satDrive);
+    pp.hq = p.choice (P::quality) == 1;
+    pp.hpOn = p.on (P::hpOn); pp.hpFreq = p.f (P::hpFreq); pp.hpSlope = std::min (p.choice (P::hpSlope), 3); pp.hpRes = p.f (P::hpRes);
+    pp.lpOn = p.on (P::lpOn); pp.lpFreq = p.f (P::lpFreq); pp.lpSlope = std::min (p.choice (P::lpSlope), 3); pp.lpRes = p.f (P::lpRes);
+    pp.filtTarget = p.choice (P::preMode) == 1 ? p.choice (P::filtTarget) : 0;
+    pp.thumpOn = p.on (P::weightOn);
+    pp.thumpAmt = std::min (p.choice (P::weightAmt), 1);
+    return pp;
+}
 } // namespace nl

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ParamSnapshot.h"
 #include "Filters.h"
 
 namespace nl
@@ -27,6 +28,12 @@ struct DsParams
 class DeEsserModule
 {
 public:
+    // Latency in samples. Must depend only on non-automatable settings (quality,
+    // lookahead), never on whether the module is on or on automatable parameters.
+    int latency() const noexcept { return 0; }
+    // Detector level of one band in dBFS, for the scope.
+    float getKeyLevelDb (int /*band*/) const noexcept { return -120.0f; } // TODO(ds)
+
     void prepare (double sampleRate)
     {
         fs = sampleRate;
@@ -241,4 +248,25 @@ private:
     float attackCoef = 0.0f, releaseCoef = 0.0f, fullEnvRelease = 0.0f, detRelease = 0.995f;
     Smoothed outGain;
 };
+// Maps the parameter snapshot to DE-ESS settings (owned by this module).
+inline DsParams readDsParams (const ParamSnapshot& p)
+{
+    DsParams dp;
+    dp.linked = p.choice (P::dsMode) == 0;
+    dp.relative = p.on (P::dsRelative);
+    dp.ext = p.on (P::dsExt);
+    dp.listen = std::min (p.choice (P::dsListen), 2); // TODO(ds): Delta
+    dp.releaseMs = p.f (P::dsRelease);
+    dp.outDb = p.f (P::dsOut);
+    for (int b = 0; b < 2; ++b)
+    {
+        const int o = P::ds1On + b * P::kDsBandStride;
+        dp.band[b].on = p.on (o);
+        dp.band[b].type = p.choice (o + 2);
+        dp.band[b].freq = p.f (o + 3);
+        dp.band[b].thresh = p.f (o + 4);
+        dp.band[b].range = p.f (o + 5);
+    }
+    return dp;
+}
 } // namespace nl

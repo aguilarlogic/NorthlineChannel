@@ -102,6 +102,52 @@ struct Smoothed
     }
 };
 
+//==============================================================================
+// Persistent control-rate clock. Control ticks fall on absolute sample indices that are
+// multiples of kControlBlock, whatever the host's block size, so anything driven by it is
+// deterministic across block sizes. The phase is unsigned and wraps safely.
+struct ControlClock
+{
+    uint32_t phase = 0; // samples since the last tick, 0 .. kControlBlock-1
+
+    void reset() noexcept { phase = 0; }
+    void advance (int n) noexcept { phase = (phase + (uint32_t) n) % (uint32_t) kControlBlock; }
+};
+
+// Smoothed gain applied with a deterministic ramp: the smoother ticks exactly at control
+// boundaries and the gain is interpolated linearly across each kControlBlock segment.
+struct RampedGain
+{
+    Smoothed sm;
+    float from = 1.0f, to = 1.0f;
+
+    void prepare (double sampleRate, float ms) { sm.prepare (sampleRate, ms); }
+    void setTarget (float t) noexcept { sm.setTarget (t); }
+    void snap() noexcept { sm.snap(); from = to = sm.current; }
+    bool isUnity() const noexcept { return from == 1.0f && to == 1.0f && sm.target == 1.0f; }
+
+    // Applies the gain to n samples of each channel; `phase` is the ControlClock phase at the
+    // first sample. Call clock.advance(n) once after every user of the clock has run.
+    void apply (float* const* io, int numCh, int n, uint32_t phase) noexcept
+    {
+        int i = 0;
+        while (i < n)
+        {
+            const int p = (int) ((phase + (uint32_t) i) % (uint32_t) kControlBlock);
+            if (p == 0) { sm.tick(); from = to; to = sm.current; }
+            const int len = std::min (n - i, kControlBlock - p);
+            const float d = (to - from) * (1.0f / (float) kControlBlock);
+            for (int c = 0; c < numCh; ++c)
+            {
+                float g = from + d * (float) p;
+                float* x = io[c] + i;
+                for (int j = 0; j < len; ++j, g += d) x[j] *= g;
+            }
+            i += len;
+        }
+    }
+};
+
 inline bool isFiniteAndSmall (float x) noexcept { return std::isfinite (x) && std::abs (x) < 1.0e6f; }
 
 // Orthonormal mid/side matrix (self-inverse, power preserving).

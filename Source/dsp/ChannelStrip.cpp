@@ -24,10 +24,9 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
     ds.prepare (fs);
     eq.prepare (fs);
     comp.prepare (fs);
-    limiter.prepare (fs);
 
     for (auto& f : moduleFade) f.prepare (fs, 10.0f);
-    limFade.prepare (fs, 10.0f);
+    master.prepare (fs, maxBlock);
     inGain.prepare (fs, 20.0f);
     outGain.prepare (fs, 20.0f);
     matchGain.prepare (fs, 200.0f);
@@ -55,9 +54,8 @@ void ChannelStrip::reset()
     ds.reset();
     eq.reset();
     comp.reset();
-    limiter.reset();
     for (int m = 0; m < numModules; ++m) moduleFade[(size_t) m].snap (moduleEnabled (m));
-    limFade.snap (pb (P::limOn));
+    master.reset (snap);
     inGain.snap();
     outGain.snap();
     matchGain.setTarget (1.0f);
@@ -67,7 +65,8 @@ void ChannelStrip::reset()
 
 int ChannelStrip::getLatencySamples() const noexcept
 {
-    return limiter.latencySamples (pb (P::limOn) && pb (P::limLookahead));
+    const int modules = pre.latency() + gate.latency() + ds.latency() + eq.latency() + comp.latency();
+    return modules + master.latency();
 }
 
 //==============================================================================
@@ -133,61 +132,18 @@ bool ChannelStrip::moduleWantsMs (int id) const noexcept
 
 void ChannelStrip::readParams()
 {
-    PreParams pp;
-    pp.satOn = pb (P::satOn); pp.satType = pi (P::satType); pp.drive = pv (P::satDrive); pp.hq = pb (P::satHQ);
-    pp.hpOn = pb (P::hpOn); pp.hpFreq = pv (P::hpFreq); pp.hpSlope = pi (P::hpSlope); pp.hpRes = pv (P::hpRes);
-    pp.lpOn = pb (P::lpOn); pp.lpFreq = pv (P::lpFreq); pp.lpSlope = pi (P::lpSlope); pp.lpRes = pv (P::lpRes);
-    pp.filtTarget = pi (P::preMode) == 1 ? pi (P::filtTarget) : 0;
-    pp.thumpOn = pb (P::thumpOn); pp.thumpAmt = pi (P::thumpAmt);
-    pre.setParams (pp);
+    for (int i = 0; i < P::count; ++i) snap.v[(size_t) i] = values[(size_t) i]->load (std::memory_order_relaxed);
 
-    GateParams gp;
-    gp.type = pi (P::gateType); gp.linked = pi (P::gateMode) == 0; gp.ext = pb (P::gateExt); gp.listen = pb (P::gateListen);
-    gp.thresh = pv (P::gateThresh); gp.hyst = pv (P::gateHyst); gp.floorDb = pv (P::gateFloor); gp.ratio = pv (P::gateRatio);
-    gp.attackMs = pv (P::gateAttack); gp.holdMs = pv (P::gateHold); gp.releaseMs = pv (P::gateRelease);
-    gp.scHp = pv (P::gateScHp); gp.scLp = pv (P::gateScLp);
-    gate.setParams (gp);
+    pre.setParams (readPreParams (snap));
+    gate.setParams (readGateParams (snap));
+    ds.setParams (readDsParams (snap));
+    eq.setParams (readEqParams (snap));
+    comp.setParams (readCompParams (snap));
 
-    DsParams dp;
-    dp.linked = pi (P::dsMode) == 0; dp.relative = pb (P::dsRelative); dp.ext = pb (P::dsExt);
-    dp.listen = pi (P::dsListen); dp.releaseMs = pv (P::dsRelease); dp.outDb = pv (P::dsOut);
-    for (int b = 0; b < 2; ++b)
-    {
-        const int o = b == 0 ? P::ds1On : P::ds2On;
-        dp.band[b].on = pb (o);
-        dp.band[b].type = pi (o + 1);
-        dp.band[b].freq = pv (o + 2);
-        dp.band[b].thresh = pv (o + 3);
-        dp.band[b].range = pv (o + 4);
-    }
-    ds.setParams (dp);
-
-    EqParams ep;
-    for (int b = 0; b < 4; ++b)
-    {
-        const int o = P::eqLowOn + b * 6;
-        ep.band[b].on = pb (o);
-        ep.band[b].type = pi (o + 1);
-        ep.band[b].freq = pv (o + 2);
-        ep.band[b].gain = pv (o + 3);
-        ep.band[b].q = pv (o + 4);
-        ep.band[b].target = pi (P::eqMode) == 1 ? pi (o + 5) : 0;
-    }
-    eq.setParams (ep);
-
-    CompParams cp;
-    cp.type = pi (P::compType); cp.linked = pi (P::compMode) == 0; cp.makeup = pb (P::compMakeup);
-    cp.ext = pb (P::compExt); cp.listen = pb (P::compListen);
-    cp.thresh = pv (P::compThresh); cp.ratio = pv (P::compRatio); cp.attackMs = pv (P::compAttack);
-    cp.releaseMs = pv (P::compRelease); cp.mix = pv (P::compMix) * 0.01f; cp.outDb = pv (P::compOut);
-    cp.scHp = pv (P::compScHp); cp.scBellFreq = pv (P::compScBellFreq); cp.scBellGain = pv (P::compScBellGain);
-    comp.setParams (cp);
-
-    limiter.setParams (pv (P::limCeiling), pv (P::limRelease), pb (P::limLookahead));
-    limFade.setTarget (pb (P::limOn));
+    master.setParams (snap);
 
     float inG = dbToGain (pv (P::inGain));
-    if (pb (P::inPhase)) inG = -inG;
+    if (pi (P::inPolarity) == 3) inG = -inG; // TODO(engine): per-channel polarity, swap
     inGain.setTarget (inG);
     outGain.setTarget (dbToGain (pv (P::outGain)));
 }
@@ -239,7 +195,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         {
             float g = g0, pk = 0.0f, ms = 0.0f;
             float* x = io[c];
-            if (pb (P::levelMatch))
+            if (pi (P::matchMode) != 0)
                 for (int i = 0; i < n; ++i) matchInPow = matchInPow * matchCoef + (double) x[i] * x[i];
             for (int i = 0; i < n; ++i, g += dg)
             {
@@ -324,7 +280,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     }
     if (inMs) lrToMs (io[0], io[1], n);
 
-    // Master: output gain -> level match -> limiter -> monitor.
+    // Master: output gain -> level match -> limiter and meters -> monitor.
     const auto tMaster = juce::Time::getHighResolutionTicks();
     {
         const float g0 = outGain.current;
@@ -337,7 +293,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         }
     }
 
-    if (pb (P::levelMatch))
+    if (pi (P::matchMode) != 0)
     {
         for (int c = 0; c < numChannels; ++c)
             for (int i = 0; i < n; ++i) matchOutPow = matchOutPow * matchCoef + (double) io[c][i] * io[c][i];
@@ -364,32 +320,8 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         }
     }
 
-    const bool lookaheadNow = pb (P::limLookahead);
-    if (pb (P::limOn) || ! limFade.isSilent())
-    {
-        if (lookaheadNow)
-        {
-            // Lookahead changes latency, so no cross-fade: the host re-aligns.
-            limFade.snap (pb (P::limOn));
-            if (limFade.isFullyOn()) limiter.process (io, numChannels, n);
-        }
-        else if (limFade.isFullyOn())
-        {
-            limiter.process (io, numChannels, n);
-        }
-        else
-        {
-            for (int c = 0; c < numChannels; ++c) std::copy (io[c], io[c] + n, dry[c].data());
-            limiter.process (io, numChannels, n);
-            for (int i = 0; i < n; ++i)
-            {
-                const float w = limFade.next();
-                for (int c = 0; c < numChannels; ++c) io[c][i] = dry[c][i] + (io[c][i] - dry[c][i]) * w;
-            }
-        }
-        frame.limGr = limiter.getGainReductionDb();
-    }
-    limLookaheadActive = lookaheadNow;
+    master.process (io, numChannels, n);
+    frame.limGr = master.getGainReductionDb();
 
     if (numChannels == 2)
     {
@@ -400,8 +332,8 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             case 1: for (int i = 0; i < n; ++i) { const float m = 0.5f * (l[i] + r[i]); l[i] = r[i] = m; } break;
             case 2: std::copy (l, l + n, r); break;
             case 3: std::copy (r, r + n, l); break;
-            case 4: for (int i = 0; i < n; ++i) { const float m = 0.5f * (l[i] + r[i]); l[i] = r[i] = m; } break;
-            case 5: for (int i = 0; i < n; ++i) { const float s = 0.5f * (l[i] - r[i]); l[i] = r[i] = s; } break;
+            case 4: for (int i = 0; i < n; ++i) { const float s = 0.5f * (l[i] - r[i]); l[i] = r[i] = s; } break;
+            case 5: for (int i = 0; i < n; ++i) std::swap (l[i], r[i]); break;
             default: break;
         }
     }
@@ -429,6 +361,11 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     frame.ds1Gr = moduleFade[modDs].isSilent() ? 0.0f : ds.getGainReductionDb (0);
     frame.ds2Gr = moduleFade[modDs].isSilent() ? 0.0f : ds.getGainReductionDb (1);
     frame.compGr = moduleFade[modComp].isSilent() ? 0.0f : comp.getGainReductionDb();
+    frame.gateKeyDb = gate.getKeyLevelDb();
+    frame.ds1KeyDb = ds.getKeyLevelDb (0);
+    frame.ds2KeyDb = ds.getKeyLevelDb (1);
+    frame.compKeyDb = comp.getKeyLevelDb();
+    for (int b = 0; b < 4; ++b) frame.eqDynGainDb[b] = moduleFade[modEq].isSilent() ? 0.0f : eq.getDynGainDb (b);
     for (int m = 0; m < 6; ++m) frame.moduleUs[m] = moduleUsSmoothed[(size_t) m];
     frame.totalUs = (float) ((double) (tEnd - tStart) * ticksToUs);
     frames.push (frame);

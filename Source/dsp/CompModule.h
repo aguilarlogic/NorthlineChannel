@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ParamSnapshot.h"
 #include "Filters.h"
 
 namespace nl
@@ -47,6 +48,12 @@ public:
         const float t = p.type == 3 ? p.thresh + 0.5f * knee : p.thresh;
         return gainComputer (levelDb, t, invR, knee);
     }
+
+    // Latency in samples. Must depend only on non-automatable settings (quality,
+    // lookahead), never on whether the module is on or on automatable parameters.
+    int latency() const noexcept { return 0; }
+    // Detector (key) level in dBFS after the sidechain filters, for the scope.
+    float getKeyLevelDb() const noexcept { return -120.0f; } // TODO(comp)
 
     void prepare (double sampleRate)
     {
@@ -236,4 +243,18 @@ private:
     int counter = 0;
     Smoothed mixSm, outSm;
 };
+// Maps the parameter snapshot to COMP settings (owned by this module).
+inline CompParams readCompParams (const ParamSnapshot& p)
+{
+    CompParams cp;
+    cp.type = p.choice (P::compType);
+    cp.linked = p.choice (P::compMode) == 0;
+    cp.makeup = p.on (P::compMakeup);
+    cp.ext = p.on (P::compExt);
+    cp.listen = p.choice (P::compListen) == 1; // TODO(comp): Delta
+    cp.thresh = p.f (P::compThresh); cp.ratio = p.f (P::compRatio); cp.attackMs = p.f (P::compAttack);
+    cp.releaseMs = p.f (P::compRelease); cp.mix = p.f (P::compMix) * 0.01f; cp.outDb = p.f (P::compOut);
+    cp.scHp = p.f (P::compScHp); cp.scBellFreq = p.f (P::compScBellFreq); cp.scBellGain = p.f (P::compScBellGain);
+    return cp;
+}
 } // namespace nl

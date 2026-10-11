@@ -1,4 +1,4 @@
-#include "ToolCommon.h"
+#include "TestUtil.h"
 #include <complex>
 #include <map>
 
@@ -8,90 +8,6 @@ namespace tool
 {
 namespace
 {
-int failures = 0, checks = 0;
-
-void check (bool ok, const juce::String& what, const juce::String& detail = {})
-{
-    ++checks;
-    if (! ok) ++failures;
-    std::printf ("  [%s] %s%s\n", ok ? "PASS" : "FAIL", what.toRawUTF8(), detail.isEmpty() ? "" : ("  (" + detail + ")").toRawUTF8());
-}
-
-std::unique_ptr<NorthlineProcessor> makeProc (double fs = 48000.0, int block = 256, bool sidechain = false)
-{
-    auto p = std::make_unique<NorthlineProcessor>();
-    auto layout = p->getBusesLayout();
-    if (sidechain && layout.inputBuses.size() > 1) layout.inputBuses.getReference (1) = juce::AudioChannelSet::stereo();
-    p->setBusesLayout (layout);
-    p->setRateAndBufferSizeDetails (fs, block);
-    p->prepareToPlay (fs, block);
-    return p;
-}
-
-// Renders `in` through the processor in blocks; returns the output.
-juce::AudioBuffer<float> render (NorthlineProcessor& p, const juce::AudioBuffer<float>& in, int block, const juce::AudioBuffer<float>* sc = nullptr)
-{
-    const int n = in.getNumSamples();
-    juce::AudioBuffer<float> out (2, n);
-    const int totalCh = p.getTotalNumInputChannels();
-    juce::AudioBuffer<float> work (juce::jmax (2, totalCh), block);
-    juce::MidiBuffer midi;
-    for (int pos = 0; pos < n; pos += block)
-    {
-        const int len = juce::jmin (block, n - pos);
-        work.setSize (work.getNumChannels(), len, false, false, true);
-        work.clear();
-        for (int c = 0; c < 2; ++c) work.copyFrom (c, 0, in, juce::jmin (c, in.getNumChannels() - 1), pos, len);
-        if (sc != nullptr && totalCh >= 4)
-            for (int c = 0; c < 2; ++c) work.copyFrom (2 + c, 0, *sc, juce::jmin (c, sc->getNumChannels() - 1), pos, len);
-        p.processBlock (work, midi);
-        for (int c = 0; c < 2; ++c) out.copyFrom (c, pos, work, c, 0, len);
-    }
-    return out;
-}
-
-juce::AudioBuffer<float> sine (double fs, double freq, float amp, int n, double phase = 0.0)
-{
-    juce::AudioBuffer<float> b (2, n);
-    for (int i = 0; i < n; ++i)
-    {
-        const float v = amp * (float) std::sin (2.0 * kPiD * freq * i / fs + phase);
-        b.setSample (0, i, v);
-        b.setSample (1, i, v);
-    }
-    return b;
-}
-
-float peakDb (const juce::AudioBuffer<float>& b, int from, int ch = 0)
-{
-    float m = 0.0f;
-    for (int i = from; i < b.getNumSamples(); ++i) m = std::max (m, std::abs (b.getSample (ch, i)));
-    return juce::Decibels::gainToDecibels (m, -200.0f);
-}
-
-float rmsDb (const juce::AudioBuffer<float>& b, int from, int ch = 0)
-{
-    double s = 0.0;
-    for (int i = from; i < b.getNumSamples(); ++i) s += (double) b.getSample (ch, i) * b.getSample (ch, i);
-    return (float) (10.0 * std::log10 (std::max (1.0e-30, s / (b.getNumSamples() - from))));
-}
-
-// Gain at one frequency from a steady-state sine.
-float gainAt (NorthlineProcessor& p, double freq, float ampDb = -20.0f)
-{
-    const double fs = p.getSampleRate();
-    const int n = (int) (fs * 1.0);
-    p.getStrip().reset();
-    auto in = sine (fs, freq, juce::Decibels::decibelsToGain (ampDb), n);
-    auto out = render (p, in, 256);
-    return rmsDb (out, n / 2) - rmsDb (in, n / 2);
-}
-
-void allModulesOff (NorthlineProcessor& p)
-{
-    for (int i : { (int) P::preOn, (int) P::gateOn, (int) P::dsOn, (int) P::eqOn, (int) P::compOn, (int) P::limOn }) setParam (p, i, 0);
-}
-
 //==============================================================================
 void testFastMath()
 {
@@ -207,7 +123,7 @@ void testSaturation()
     // Aliasing: bin-exact 5 kHz tone at full drive, energy outside the true harmonics.
     auto aliasDb = [&] (bool hq, int type)
     {
-        setParam (*p, P::satHQ, hq ? 1.0f : 0.0f);
+        setParam (*p, P::quality, hq ? 1.0f : 0.0f);
         setParam (*p, P::satType, (float) type);
         setParam (*p, P::satDrive, 100);
         p->getStrip().reset();
@@ -277,7 +193,7 @@ void testDynamics()
     setParam (*p, P::limCeiling, -1);
     for (bool la : { false, true })
     {
-        setParam (*p, P::limLookahead, la ? 1.0f : 0.0f);
+        setParam (*p, P::limMode, la ? 1.0f : 0.0f);
         p->getStrip().reset();
         auto loud = sine (48000.0, 100.0, juce::Decibels::decibelsToGain (6.0f), 48000);
         juce::Random r2 (3);
@@ -475,20 +391,36 @@ void testStateAndUndo()
 }
 } // namespace
 
-int runTests()
+int runTests (const juce::StringArray& args)
 {
+    const juce::String filter = args.size() > 1 ? args[1] : juce::String();
     std::puts ("Northline Channel test suite\n");
-    testFastMath();
-    testParams();
-    testNullAndLatency();
-    testFilters();
-    testSaturation();
-    testDynamics();
-    testMetering();
-    testBlockSizeIndependence();
-    testRealtimeSafety();
-    testStateAndUndo();
-    std::printf ("\n%d checks, %d failed\n", checks, failures);
-    return failures == 0 ? 0 : 1;
+
+    std::vector<TestCase> all {
+        { "core_fastMath", testFastMath },
+        { "core_params", testParams },
+        { "core_nullAndLatency", testNullAndLatency },
+        { "core_filters", testFilters },
+        { "core_saturation", testSaturation },
+        { "core_dynamics", testDynamics },
+        { "core_metering", testMetering },
+        { "core_blockSizeIndependence", testBlockSizeIndependence },
+        { "core_realtimeSafety", testRealtimeSafety },
+        { "core_stateAndUndo", testStateAndUndo },
+    };
+    auto reg = testRegistry();
+    std::sort (reg.begin(), reg.end(), [] (const TestCase& x, const TestCase& y) { return juce::String (x.name) < juce::String (y.name); });
+    all.insert (all.end(), reg.begin(), reg.end());
+
+    int ran = 0;
+    for (auto& t : all)
+    {
+        if (filter.isNotEmpty() && ! juce::String (t.name).containsIgnoreCase (filter)) continue;
+        std::printf ("== %s\n", t.name);
+        t.fn();
+        ++ran;
+    }
+    std::printf ("\n%d tests, %d checks, %d failed\n", ran, checks, failures);
+    return failures == 0 && ran > 0 ? 0 : 1;
 }
 } // namespace tool

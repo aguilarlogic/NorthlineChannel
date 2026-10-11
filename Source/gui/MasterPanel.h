@@ -34,8 +34,8 @@ private:
     NorthlineProcessor& proc;
     juce::OwnedArray<juce::Component> owned;
     Knob *inGain, *outGain, *vuRef, *ceiling, *limRelease;
-    Chip *phase, *limOn, *lookahead, *match;
-    ChoiceBox *vuSource, *monitor;
+    Chip *limOn;
+    ChoiceBox *phase, *lookahead, *match, *vuSource, *monitor;
     StereoMeter inMeter, outMeter;
     VuMeter vu;
     GrBar limGr { colours::master, 12.0f };

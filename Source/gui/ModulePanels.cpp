@@ -143,11 +143,11 @@ PrePanel::PrePanel (NorthlineProcessor& p) : ModulePanel (p, modPre, P::preOn, P
 {
     satOn = chip (P::satOn, "SAT");
     satType = choice (P::satType);
-    hq = chip (P::satHQ, "HQ");
-    hq->setTooltip ("HQ: 2x minimum-phase oversampling for the shaper (lower aliasing; no reported latency)");
+    hq = chip (P::quality, "HQ");
+    hq->setTooltip ("Global quality. HQ oversamples the nonlinear stages (lower aliasing)");
     drive = knob (P::satDrive, "Drive");
-    thumpOn = chip (P::thumpOn, "THUMP");
-    thumpAmt = choice (P::thumpAmt);
+    thumpOn = chip (P::weightOn, "WEIGHT");
+    thumpAmt = choice (P::weightAmt);
     hpOn = chip (P::hpOn, "HP");
     hpSlope = choice (P::hpSlope);
     lpOn = chip (P::lpOn, "LP");

@@ -63,6 +63,8 @@ struct MeterFrame
 {
     float inPeak[2] {}, outPeak[2] {}, inMs[2] {}, outMs[2] {};
     float gateGr = 0, ds1Gr = 0, ds2Gr = 0, compGr = 0, limGr = 0;
+    float gateKeyDb = -120, ds1KeyDb = -120, ds2KeyDb = -120, compKeyDb = -120; // detector levels for scopes
+    float eqDynGainDb[4] {};                                                    // dynamic EQ band gains
     float moduleUs[6] {}; // PRE, GATE, DS, EQ, COMP, MASTER
     float totalUs = 0, blockUs = 0;
     int numSamples = 0;

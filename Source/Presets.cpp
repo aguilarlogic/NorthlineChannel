@@ -34,7 +34,7 @@ const std::vector<FactoryPreset>& factoryPresets()
 
         { "Drums", "Kick - Punch",
           { { gateOn, 1 }, { gateThresh, -32 }, { gateFloor, -24 }, { gateRelease, 120 }, { gateHold, 40 },
-            { thumpOn, 1 }, { thumpAmt, 0 },
+            { weightOn, 1 }, { weightAmt, 0 },
             { eqLowType, 2 }, { eqLowFreq, 60 }, { eqLowGain, 3 }, { eqLowQ, 1.2f },
             { eqMidType, 1 }, { eqMidFreq, 360 }, { eqMidGain, -4 },
             { eqToneType, 2 }, { eqToneFreq, 3500 }, { eqToneGain, 3 }, { eqToneQ, 1.5f },

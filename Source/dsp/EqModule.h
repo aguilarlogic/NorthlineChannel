@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ParamSnapshot.h"
 #include "Filters.h"
 
 namespace nl
@@ -49,6 +50,12 @@ public:
                 return makeSvf (SvfType::Bell, fs, freq, q, gainDb);
         }
     }
+
+    // Latency in samples. Must depend only on non-automatable settings (quality,
+    // lookahead), never on whether the module is on or on automatable parameters.
+    int latency() const noexcept { return 0; }
+    // Current dynamic gain of one band in dB (0 when the band is static), for the display.
+    float getDynGainDb (int /*band*/) const noexcept { return 0.0f; } // TODO(eq)
 
     void prepare (double sampleRate)
     {
@@ -151,4 +158,21 @@ private:
     BandState bands[4];
     int counter = 0;
 };
+// Maps the parameter snapshot to EQ settings (owned by this module).
+inline EqParams readEqParams (const ParamSnapshot& p)
+{
+    EqParams ep;
+    const bool ms = p.choice (P::eqMode) == 1;
+    for (int b = 0; b < 4; ++b)
+    {
+        const int o = P::eqLowOn + b * P::kEqBandStride;
+        ep.band[b].on = p.on (o);
+        ep.band[b].type = p.choice (o + 1);
+        ep.band[b].freq = p.f (o + 2);
+        ep.band[b].gain = p.f (o + 3);
+        ep.band[b].q = p.f (o + 4);
+        ep.band[b].target = ms ? p.choice (o + 5) : 0;
+    }
+    return ep;
+}
 } // namespace nl

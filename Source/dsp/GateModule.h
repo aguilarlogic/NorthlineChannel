@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ParamSnapshot.h"
 #include "Filters.h"
 
 namespace nl
@@ -19,6 +20,12 @@ struct GateParams
 class GateModule
 {
 public:
+    // Latency in samples. Must depend only on non-automatable settings (quality,
+    // lookahead), never on whether the module is on or on automatable parameters.
+    int latency() const noexcept { return 0; }
+    // Detector (key) level in dBFS after the sidechain filters, for the scope.
+    float getKeyLevelDb() const noexcept { return -120.0f; } // TODO(gate)
+
     void prepare (double sampleRate)
     {
         fs = sampleRate;
@@ -130,4 +137,17 @@ private:
     float detRelease = 0.0f, attackCoef = 0.0f, releaseMul = 0.999f, floorGain = 0.01f, grDb = 0.0f;
     int holdSamples = 0;
 };
+// Maps the parameter snapshot to GATE settings (owned by this module).
+inline GateParams readGateParams (const ParamSnapshot& p)
+{
+    GateParams gp;
+    gp.type = std::min (p.choice (P::gateType), 1); // TODO(gate): Duck
+    gp.linked = p.choice (P::gateMode) == 0;
+    gp.ext = p.on (P::gateExt);
+    gp.listen = p.on (P::gateListen);
+    gp.thresh = p.f (P::gateThresh); gp.hyst = p.f (P::gateHyst); gp.floorDb = p.f (P::gateFloor); gp.ratio = p.f (P::gateRatio);
+    gp.attackMs = p.f (P::gateAttack); gp.holdMs = p.f (P::gateHold); gp.releaseMs = p.f (P::gateRelease);
+    gp.scHp = p.f (P::gateScHp); gp.scLp = p.f (P::gateScLp);
+    return gp;
+}
 } // namespace nl

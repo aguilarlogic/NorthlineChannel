@@ -84,13 +84,16 @@ int main (int argc, char* argv[])
     for (int i = 1; i < argc; ++i) args.add (juce::String::fromUTF8 (argv[i]));
 
     const auto cmd = args.isEmpty() ? juce::String ("test") : args[0];
-    if (cmd == "test") return tool::runTests();
+    if (cmd == "test") return tool::runTests (args);
+    if (cmd == "measure") return tool::runMeasure (args);
     if (cmd == "bench" || cmd == "host-bench") return tool::runBench (args);
     if (cmd == "snapshot" && args.size() > 1)
         return tool::snapshot (juce::File::getCurrentWorkingDirectory().getChildFile (args[1]), args.size() > 2 ? args[2].getIntValue() : 1);
 
     std::printf ("NorthlineTool\n"
-                 "  test                         run DSP / realtime-safety / state unit tests\n"
+                 "  test [filter]                run DSP / realtime-safety / state tests (names containing filter)\n"
+                 "  measure <suite|all|list> [--out dir] [--quick]\n"
+                 "                               run measurement suites and write Markdown reports\n"
                  "  bench [--quick]              CPU benchmark of Northline Channel (in-process)\n"
                  "  host-bench <file.vst3> [name-filter] [--quick]\n"
                  "                               load any VST3 (e.g. a competitor strip) and benchmark it the same way\n"

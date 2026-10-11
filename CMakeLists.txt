@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(NorthlineChannel VERSION 1.0.0 LANGUAGES C CXX)
+project(NorthlineChannel VERSION 0.9.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,18 +13,10 @@ if(APPLE)
     list(APPEND NL_FORMATS AU)
 endif()
 
-# Sources shared by the plugin and the test/benchmark tool.
-set(NL_SOURCES
-    Source/PluginProcessor.cpp
-    Source/Params.cpp
-    Source/Presets.cpp
-    Source/dsp/ChannelStrip.cpp
-    Source/gui/PluginEditor.cpp
-    Source/gui/LookAndFeel.cpp
-    Source/gui/Widgets.cpp
-    Source/gui/ModulePanels.cpp
-    Source/gui/MasterPanel.cpp
-    Source/gui/TopBar.cpp)
+# Sources shared by the plugin and the test/benchmark tool. New files are picked up
+# automatically (re-run CMake configure after adding one).
+file(GLOB_RECURSE NL_SOURCES CONFIGURE_DEPENDS Source/*.cpp)
+file(GLOB NL_TOOL_SOURCES CONFIGURE_DEPENDS tools/*.cpp tools/tests/*.cpp tools/measure/*.cpp)
 
 set(NL_DEFINITIONS
     JUCE_WEB_BROWSER=0
@@ -66,7 +58,7 @@ target_link_libraries(NorthlineChannel
 
 # Console tool: unit tests, CPU benchmark, and benchmarking of any other VST3 for comparison.
 juce_add_console_app(NorthlineTool PRODUCT_NAME "NorthlineTool")
-target_sources(NorthlineTool PRIVATE tools/ToolMain.cpp tools/Tests.cpp tools/Bench.cpp ${NL_SOURCES})
+target_sources(NorthlineTool PRIVATE ${NL_TOOL_SOURCES} ${NL_SOURCES})
 target_include_directories(NorthlineTool PRIVATE Source tools)
 target_compile_definitions(NorthlineTool PRIVATE ${NL_DEFINITIONS} JUCE_PLUGINHOST_VST3=1 NL_TOOL_BUILD=1)
 target_link_libraries(NorthlineTool
