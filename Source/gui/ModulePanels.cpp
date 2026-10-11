@@ -297,7 +297,7 @@ void EqDisplay::timerCallback()
 {
     std::vector<float> v;
     v.reserve (40);
-    for (int i = P::eqOn; i <= P::eqHighTarget; ++i) v.push_back (pv (i));
+    for (int i = P::eqOn; i <= P::eqHighDynExt; ++i) v.push_back (pv (i));
     for (int i : { (int) P::preOn, (int) P::hpOn, (int) P::hpFreq, (int) P::hpSlope, (int) P::hpRes,
                    (int) P::lpOn, (int) P::lpFreq, (int) P::lpSlope, (int) P::lpRes })
         v.push_back (pv (i));
@@ -323,7 +323,7 @@ void EqDisplay::rebuild()
     const bool eqOn = pv (P::eqOn) >= 0.5f;
     for (int b = 0; b < 4; ++b)
     {
-        const int o = P::eqLowOn + b * 6;
+        const int o = P::eqLowOn + b * P::kEqBandStride;
         active[(size_t) b] = eqOn && pv (o) >= 0.5f && std::abs (pv (o + 3)) > 0.01f;
         coefs[(size_t) b] = EqModule::bandCoefs (b, (int) std::lround (pv (o + 1)), fs, pv (o + 2), pv (o + 3), pv (o + 4));
         handles[(size_t) b] = { xForFreq (pv (o + 2)), yForDb (pv (o) >= 0.5f ? pv (o + 3) : 0.0f) };
@@ -399,7 +399,7 @@ void EqDisplay::paint (juce::Graphics& g)
     for (int b = 0; b < 4; ++b)
     {
         const auto h = handles[(size_t) b];
-        const bool on = pv (P::eqLowOn + b * 6) >= 0.5f;
+        const bool on = pv (P::eqLowOn + b * P::kEqBandStride) >= 0.5f;
         g.setColour (on ? colours::eq : colours::faint);
         g.fillEllipse (h.x - 6.0f, h.y - 6.0f, 12.0f, 12.0f);
         g.setColour (juce::Colours::black);
@@ -454,7 +454,7 @@ void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
     for (int b = 0; b < 4; ++b)
         if (handles[(size_t) b].getDistanceFrom (e.position) < 10.0f)
         {
-            const int o = P::eqLowOn + b * 6;
+            const int o = P::eqLowOn + b * P::kEqBandStride;
             proc.param (o + 3)->beginChangeGesture();
             setParam (o + 3, 0.0f);
             proc.param (o + 3)->endChangeGesture();
@@ -468,7 +468,7 @@ EqPanel::EqPanel (NorthlineProcessor& p) : ModulePanel (p, modEq, P::eqOn, P::eq
     static const char* names[] { "LOW", "MID", "TONE", "HIGH" };
     for (int b = 0; b < 4; ++b)
     {
-        const int o = P::eqLowOn + b * 6;
+        const int o = P::eqLowOn + b * P::kEqBandStride;
         auto& band = bands[(size_t) b];
         band.on = chip (o, names[b]);
         band.type = choice (o + 1);
