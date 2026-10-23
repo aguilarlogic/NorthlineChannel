@@ -212,6 +212,11 @@ void NorthlineProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
     for (int c = numCh; c < mainOut.getNumChannels(); ++c) mainOut.clear (c, 0, n);
 
+    // Loudness integration can pause while the host transport is stopped (MeterHub option).
+    if (auto* ph = getPlayHead())
+        if (auto position = ph->getPosition())
+            strip.meterHub().setTransportPlaying (position->getIsPlaying());
+
     // Process in chunks no larger than the prepared block size.
     int pos = 0;
     while (pos < n)
