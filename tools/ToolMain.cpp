@@ -7,12 +7,11 @@ namespace tool
 {
 std::atomic<bool> countAllocations { false };
 std::atomic<long long> allocationCount { 0 };
-static std::thread::id countingThread; // the thread that renders audio in the tests (main)
+std::thread::id countingThread;
 } // namespace tool
 
-// Count every heap allocation made by the rendering thread while the flag is set, so tests
-// can prove the audio path never allocates. Other threads (JUCE's timer thread posting
-// messages, for example) are not counted.
+// Count heap allocations made by the counting thread while the flag is set, so tests can prove
+// the audio path never allocates (other threads, e.g. JUCE's timer, are ignored).
 void* operator new (std::size_t size)
 {
     if (tool::countAllocations.load (std::memory_order_relaxed) && std::this_thread::get_id() == tool::countingThread)

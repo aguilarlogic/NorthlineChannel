@@ -2,12 +2,15 @@
 
 #include "PluginProcessor.h"
 #include <atomic>
+#include <thread>
 
 namespace tool
 {
-// Allocation counter (global operator new is overridden in ToolMain.cpp).
+// Allocation counter (global operator new is overridden in ToolMain.cpp). Only allocations made
+// on `countingThread` (the main thread unless a test changes it) are counted.
 extern std::atomic<bool> countAllocations;
 extern std::atomic<long long> allocationCount;
+extern std::thread::id countingThread;
 
 int runTests (const juce::StringArray& args);
 int runMeasure (const juce::StringArray& args);

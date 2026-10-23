@@ -124,6 +124,42 @@ inline juce::AudioBuffer<float> renderWithAutomation (NorthlineProcessor& p, con
     return out;
 }
 
+// Sample-exact variant of renderWithAutomation: host blocks are shortened so that every event
+// is applied at exactly its sample position, whatever the block size (like a host that splits
+// blocks at automation points). Use this to compare block sizes that do not divide the event
+// spacing: renderWithAutomation applies an event up to block-1 samples early, which moves it
+// across control ticks and makes bit-identical output impossible for any engine.
+inline juce::AudioBuffer<float> renderWithAutomationExact (NorthlineProcessor& p, const juce::AudioBuffer<float>& in, int block,
+                                                           const std::vector<AutomationEvent>& events, const juce::AudioBuffer<float>* sc = nullptr)
+{
+    const int n = in.getNumSamples();
+    juce::AudioBuffer<float> out (2, n);
+    const int totalCh = p.getTotalNumInputChannels();
+    juce::AudioBuffer<float> work (juce::jmax (2, totalCh), block);
+    juce::MidiBuffer midi;
+    size_t next = 0;
+    int pos = 0;
+    while (pos < n)
+    {
+        while (next < events.size() && events[next].sample <= pos)
+        {
+            setParam (p, events[next].param, events[next].value);
+            ++next;
+        }
+        int len = juce::jmin (block, n - pos);
+        if (next < events.size()) len = juce::jmin (len, events[next].sample - pos);
+        work.setSize (work.getNumChannels(), len, false, false, true);
+        work.clear();
+        for (int c = 0; c < 2; ++c) work.copyFrom (c, 0, in, juce::jmin (c, in.getNumChannels() - 1), pos, len);
+        if (sc != nullptr && totalCh >= 4)
+            for (int c = 0; c < 2; ++c) work.copyFrom (2 + c, 0, *sc, juce::jmin (c, sc->getNumChannels() - 1), pos, len);
+        p.processBlock (work, midi);
+        for (int c = 0; c < 2; ++c) out.copyFrom (c, pos, work, c, 0, len);
+        pos += len;
+    }
+    return out;
+}
+
 inline juce::AudioBuffer<float> sine (double fs, double freq, float amp, int n, double phase = 0.0)
 {
     juce::AudioBuffer<float> b (2, n);

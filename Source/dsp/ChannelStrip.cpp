@@ -2,6 +2,22 @@
 
 namespace nl
 {
+namespace
+{
+// Contiguous parameter blocks. A module's settings may depend only on its own block plus the
+// global quality and op_level parameters; the strip calls setParams only when one of those changed.
+struct Range { int first, last; };
+constexpr Range kPreRange { P::preOn, P::weightTrack };
+constexpr Range kGateRange { P::gateOn, P::gateLookahead };
+constexpr Range kDsRange { P::dsOn, P::ds2Range };
+constexpr Range kEqRange { P::eqOn, P::eqHighDynExt };
+constexpr Range kCompRange { P::compOn, P::compLookahead };
+constexpr Range kLimiterRange { P::limOn, P::limRelease };
+constexpr Range kInputRange { P::inGain, P::globalMix }; // input stage, output gain, mix
+
+constexpr double kMaxRingSampleRate = 384000.0;
+} // namespace
+
 ChannelStrip::ChannelStrip (juce::AudioProcessorValueTreeState& state)
 {
     for (int i = 0; i < P::count; ++i)
@@ -11,6 +27,10 @@ ChannelStrip::ChannelStrip (juce::AudioProcessorValueTreeState& state)
     }
     packedOrder.store (packOrder (defaultOrder));
     ticksToUs = 1.0e6 / (double) juce::Time::getHighResolutionTicksPerSecond();
+
+    // The rings are sized once for the worst case, so prepare() never reallocates under a live consumer.
+    frames.allocate (256);
+    samples.allocate ((size_t) (kMaxRingSampleRate * 0.75));
 }
 
 void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels)
@@ -24,49 +44,74 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
     ds.prepare (fs, maxBlock);
     eq.prepare (fs, maxBlock);
     comp.prepare (fs, maxBlock);
+    master.prepare (fs, maxBlock);
 
     for (auto& f : moduleFade) f.prepare (fs, 10.0f);
-    master.prepare (fs, maxBlock);
-    inGain.prepare (fs, 20.0f);
+    for (auto& g : inGain) g.prepare (fs, 20.0f);
     outGain.prepare (fs, 20.0f);
-    matchGain.prepare (fs, 200.0f);
-    matchCoef = std::exp (-1.0 / (1.5 * fs));
+    matchGain.prepare (fs, 50.0f);
+    mixAmt.prepare (fs, 20.0f);
+    swapAmt.prepare (fs, 10.0f);
+    monitor.prepare (fs, 10.0f);
+    levelMatch.prepare (fs);
+
+    const int maxLat = maxModuleLatency (fs);
+    for (int m = 0; m < numModules; ++m)
+    {
+        bypassDelay[(size_t) m].prepare (2, maxLat);
+        if (testExtra[(size_t) m] > 0) testWet[(size_t) m].prepare (2, maxLat);
+    }
+    dryDelay.prepare (2, maxLat * numModules);
 
     for (int c = 0; c < 2; ++c)
     {
-        dry[c].assign ((size_t) maxBlock, 0.0f);
+        fadeDry[c].assign ((size_t) maxBlock, 0.0f);
+        tapDry[c].assign ((size_t) maxBlock, 0.0f);
         key[c].assign ((size_t) maxBlock, 0.0f);
         keyMs[c].assign ((size_t) maxBlock, 0.0f);
     }
     sampleScratch.assign ((size_t) maxBlock, StereoSample {});
-    frames.allocate (256);
-    samples.allocate ((size_t) (fs * 0.75));
 
-    readParams();
+    // Consumers drop whatever the rings still hold from before this prepare.
+    ringGeneration.fetch_add (1, std::memory_order_release);
+
+    haveSnap = false;
     reset();
 }
 
 void ChannelStrip::reset()
 {
-    readParams();
+    updateParams (true);
+    clock.reset();
+
     pre.reset();
     gate.reset();
     ds.reset();
     eq.reset();
     comp.reset();
-    for (int m = 0; m < numModules; ++m) moduleFade[(size_t) m].snap (moduleEnabled (m));
     master.reset (snap);
-    inGain.snap();
-    outGain.snap();
-    matchGain.setTarget (1.0f);
-    matchGain.snap();
-    matchInPow = matchOutPow = 0.0;
-}
 
-int ChannelStrip::getLatencySamples() const noexcept
-{
-    const int modules = pre.latency() + gate.latency() + ds.latency() + eq.latency() + comp.latency();
-    return modules + master.latency();
+    for (int m = 0; m < numModules; ++m)
+    {
+        moduleFade[(size_t) m].snap (moduleEnabled (m));
+        holdoff[(size_t) m] = 0;
+        bypassDelay[(size_t) m].reset();
+        testWet[(size_t) m].reset();
+    }
+    dryDelay.reset();
+
+    for (auto& g : inGain) g.snap();
+    outGain.snap();
+    swapAmt.snap();
+    mixAmt.snap();
+
+    levelMatch.resetMeasurement();
+    levelMatch.update (pi (P::matchMode), pv (P::matchTrim));
+    lastMatchDb = levelMatch.gainDb();
+    matchGain.setTarget (dbToGain (lastMatchDb));
+    matchGain.snap();
+
+    monitor.snap (pi (P::monitor));
 }
 
 //==============================================================================
@@ -103,6 +148,45 @@ void ChannelStrip::setOrder (const Order& order) noexcept
 ChannelStrip::Order ChannelStrip::getOrder() const noexcept { return unpackOrder (packedOrder.load()); }
 
 //==============================================================================
+size_t ChannelStrip::popMeterFrames (MeterFrame* out, size_t maxCount, bool* wasReset) noexcept
+{
+    if (wasReset != nullptr) *wasReset = false;
+    if (maxCount == 0) return 0;
+    const auto generation = ringGeneration.load (std::memory_order_acquire);
+    if (generation != seenFrameGeneration)
+    {
+        seenFrameGeneration = generation;
+        while (frames.pop (out, maxCount) == maxCount) {}
+        if (wasReset != nullptr) *wasReset = true;
+        return 0;
+    }
+    return frames.pop (out, maxCount);
+}
+
+size_t ChannelStrip::popOutputSamples (StereoSample* out, size_t maxCount, bool* wasReset) noexcept
+{
+    if (wasReset != nullptr) *wasReset = false;
+    if (maxCount == 0) return 0;
+    const auto generation = ringGeneration.load (std::memory_order_acquire);
+    if (generation != seenSampleGeneration)
+    {
+        seenSampleGeneration = generation;
+        while (samples.pop (out, maxCount) == maxCount) {}
+        if (wasReset != nullptr) *wasReset = true;
+        return 0;
+    }
+    return samples.pop (out, maxCount);
+}
+
+void ChannelStrip::setTestModuleLatency (int moduleId, int extraSamples)
+{
+    jassert (moduleId >= 0 && moduleId < numModules);
+    testExtra[(size_t) moduleId] = std::clamp (extraSamples, 0, maxModuleLatency (fs));
+    if (testExtra[(size_t) moduleId] > 0) testWet[(size_t) moduleId].prepare (2, maxModuleLatency (fs));
+    refreshLatency();
+}
+
+//==============================================================================
 bool ChannelStrip::moduleEnabled (int id) const noexcept
 {
     switch (id)
@@ -130,22 +214,68 @@ bool ChannelStrip::moduleWantsMs (int id) const noexcept
     }
 }
 
-void ChannelStrip::readParams()
+void ChannelStrip::updateParams (bool force)
 {
     for (int i = 0; i < P::count; ++i) snap.v[(size_t) i] = values[(size_t) i]->load (std::memory_order_relaxed);
+    if (! haveSnap || forceFull.load (std::memory_order_relaxed)) force = true;
 
-    pre.setParams (readPreParams (snap));
-    gate.setParams (readGateParams (snap));
-    ds.setParams (readDsParams (snap));
-    eq.setParams (readEqParams (snap));
-    comp.setParams (readCompParams (snap));
+    const auto changed = [&] (Range r)
+    {
+        return force || std::memcmp (&snap.v[(size_t) r.first], &prevSnap.v[(size_t) r.first],
+                                     (size_t) (r.last - r.first + 1) * sizeof (float)) != 0;
+    };
+    const bool globals = changed ({ P::quality, P::quality }) || changed ({ P::opLevel, P::opLevel });
 
-    master.setParams (snap);
+    bool latencyMayChange = false;
+    const auto update = [&] (int index, Range r, auto&& apply)
+    {
+        if (! (globals || changed (r))) return;
+        apply();
+        paramUpdates[(size_t) index].fetch_add (1, std::memory_order_relaxed);
+        latencyMayChange = true;
+    };
+    update (modPre, kPreRange, [&] { pre.setParams (readPreParams (snap)); });
+    update (modGate, kGateRange, [&] { gate.setParams (readGateParams (snap)); });
+    update (modDs, kDsRange, [&] { ds.setParams (readDsParams (snap)); });
+    update (modEq, kEqRange, [&] { eq.setParams (readEqParams (snap)); });
+    update (modComp, kCompRange, [&] { comp.setParams (readCompParams (snap)); });
+    if (globals || changed (kLimiterRange) || changed ({ P::vuSource, P::vuSource }))
+    {
+        master.setParams (snap);
+        paramUpdates[numModules].fetch_add (1, std::memory_order_relaxed);
+        latencyMayChange = true;
+    }
 
-    float inG = dbToGain (pv (P::inGain));
-    if (pi (P::inPolarity) == 3) inG = -inG; // TODO(engine): per-channel polarity, swap
-    inGain.setTarget (inG);
-    outGain.setTarget (dbToGain (pv (P::outGain)));
+    // Strip-level controls. Everything ramps at control rate (deterministic across block sizes).
+    if (changed (kInputRange))
+    {
+        const float g = dbToGain (pv (P::inGain));
+        const int pol = pi (P::inPolarity);
+        inGain[0].setTarget ((pol == 1 || pol == 3) ? -g : g);
+        inGain[1].setTarget ((pol == 2 || pol == 3) ? -g : g);
+        swapAmt.setTarget (pb (P::inSwap) ? 1.0f : 0.0f);
+        outGain.setTarget (dbToGain (pv (P::outGain)));
+        mixAmt.setTarget (std::clamp (pv (P::globalMix) * 0.01f, 0.0f, 1.0f));
+    }
+
+    if (latencyMayChange) refreshLatency();
+    prevSnap = snap;
+    haveSnap = true;
+}
+
+void ChannelStrip::refreshLatency()
+{
+    const int cap = maxModuleLatency (fs);
+    const int raw[numModules] { pre.latency(), gate.latency(), ds.latency(), eq.latency(), comp.latency() };
+    int chain = 0;
+    for (int m = 0; m < numModules; ++m)
+    {
+        jassert (raw[m] >= 0 && raw[m] + testExtra[(size_t) m] <= cap);
+        moduleLat[(size_t) m] = std::clamp (raw[m] + testExtra[(size_t) m], 0, cap);
+        chain += moduleLat[(size_t) m];
+    }
+    latencyChain.store (chain, std::memory_order_relaxed);
+    latencyTotal.store (chain + std::max (0, master.latency()), std::memory_order_relaxed);
 }
 
 void ChannelStrip::resetModule (int id)
@@ -159,6 +289,7 @@ void ChannelStrip::resetModule (int id)
         case modComp: comp.reset(); break;
         default: break;
     }
+    testWet[(size_t) id].reset();
 }
 
 void ChannelStrip::runModule (int id, float* const* io, int numChannels, int n, const float* const* k)
@@ -172,6 +303,128 @@ void ChannelStrip::runModule (int id, float* const* io, int numChannels, int n, 
         case modComp: comp.process (io, numChannels, n, k); break;
         default: break;
     }
+    if (testExtra[(size_t) id] > 0)
+    {
+        testWet[(size_t) id].setDelay (testExtra[(size_t) id]);
+        testWet[(size_t) id].process (io, io, numChannels, n);
+    }
+}
+
+//==============================================================================
+std::array<float, ChannelStrip::Monitor::kMatrixSize> ChannelStrip::Monitor::matrixFor (int mode) noexcept
+{
+    // out L = a L + b R, out R = c L + d R
+    switch (mode)
+    {
+        case 1:  return { 0.5f, 0.5f, 0.5f, 0.5f };   // Mono
+        case 2:  return { 1.0f, 0.0f, 1.0f, 0.0f };   // Left
+        case 3:  return { 0.0f, 1.0f, 0.0f, 1.0f };   // Right
+        case 4:  return { 0.5f, -0.5f, 0.5f, -0.5f }; // Side: 0.5 (L - R)
+        case 5:  return { 0.0f, 1.0f, 1.0f, 0.0f };   // Swap
+        default: return { 1.0f, 0.0f, 0.0f, 1.0f };   // Stereo
+    }
+}
+
+void ChannelStrip::Monitor::set (int newMode) noexcept
+{
+    if (newMode == mode) return;
+    // Start the new ramp from where the running one is now.
+    if (t >= 1.0f) from = to;
+    else for (size_t k = 0; k < kMatrixSize; ++k) from[k] = from[k] + (to[k] - from[k]) * t;
+    to = matrixFor (newMode);
+    t = 0.0f;
+    mode = newMode;
+}
+
+void ChannelStrip::Monitor::process (float* l, float* r, int n) noexcept
+{
+    for (int i = 0; i < n; ++i)
+    {
+        if (t < 1.0f) t = std::min (1.0f, t + step);
+        float m[kMatrixSize];
+        for (size_t k = 0; k < kMatrixSize; ++k) m[k] = t >= 1.0f ? to[k] : from[k] + (to[k] - from[k]) * t;
+        const float a = l[i], b = r[i];
+        l[i] = m[0] * a + m[1] * b;
+        r[i] = m[2] * a + m[3] * b;
+    }
+}
+
+//==============================================================================
+void ChannelStrip::inputStage (float* const* io, int numCh, int n)
+{
+    const uint32_t phase = clock.phase;
+
+    if (numCh == 2)
+    {
+        if (swapAmt.isConstant())
+        {
+            if (swapAmt.target() >= 1.0f) std::swap_ranges (io[0], io[0] + n, io[1]);
+        }
+        else
+        {
+            swapAmt.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+            {
+                float* l = io[0] + s;
+                float* r = io[1] + s;
+                for (int j = 0; j < len; ++j)
+                {
+                    const float m = base + slope * (float) (offset + j), a = l[j], b = r[j];
+                    l[j] = a * (1.0f - m) + b * m;
+                    r[j] = b * (1.0f - m) + a * m;
+                }
+            });
+        }
+    }
+
+    for (int c = 0; c < numCh; ++c)
+        if (! inGain[(size_t) c].isUnity()) inGain[(size_t) c].apply (io + c, 1, n, phase);
+}
+
+void ChannelStrip::matchStage (float* const* io, int numCh, int n)
+{
+    const uint32_t phase = clock.phase;
+    bool measuring = levelMatch.isMeasuring();
+    int done = 0;
+    while (done < n)
+    {
+        int seg = n - done;
+        if (measuring) seg = std::min (seg, levelMatch.samplesToHop());
+
+        float* out[2] { io[0] + done, numCh > 1 ? io[1] + done : nullptr };
+        bool hopFinished = false;
+        if (measuring)
+        {
+            const float* ref[2] { tapDry[0].data() + done, tapDry[1].data() + done };
+            hopFinished = levelMatch.process (ref, out, numCh, seg);
+        }
+        matchGain.apply (out, numCh, seg, phase + (uint32_t) done);
+
+        if (hopFinished)
+        {
+            measuring = levelMatch.isMeasuring();
+            const float db = levelMatch.gainDb();
+            if (db != lastMatchDb) { lastMatchDb = db; matchGain.setTarget (dbToGain (db)); }
+        }
+        done += seg;
+    }
+}
+
+void ChannelStrip::mixStage (float* const* io, int numCh, int n)
+{
+    mixAmt.forEachSegment (n, clock.phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        if (base == 1.0f && slope == 0.0f) return;
+        for (int c = 0; c < numCh; ++c)
+        {
+            float* wet = io[c] + s;
+            const float* dry = tapDry[(size_t) c].data() + s;
+            for (int j = 0; j < len; ++j)
+            {
+                const float m = base + slope * (float) (offset + j);
+                wet[j] = dry[j] + (wet[j] - dry[j]) * m;
+            }
+        }
+    });
 }
 
 //==============================================================================
@@ -180,32 +433,46 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     jassert (n <= maxBlock);
     const auto tStart = juce::Time::getHighResolutionTicks();
     numChannels = juce::jlimit (1, 2, numChannels);
-    readParams();
+    updateParams (false);
+    levelMatch.update (pi (P::matchMode), pv (P::matchTrim));
+    if (const float db = levelMatch.gainDb(); db != lastMatchDb)
+    {
+        lastMatchDb = db;
+        matchGain.setTarget (dbToGain (db));
+    }
+    monitor.set (pi (P::monitor));
 
     MeterFrame frame;
     frame.numSamples = n;
     frame.blockUs = (float) (1.0e6 * n / fs);
 
-    // Input stage: gain / polarity, ramped across the block.
+    // Input stage: swap, polarity and gain.
+    inputStage (io, numChannels, n);
+    for (int c = 0; c < numChannels; ++c)
     {
-        const float g0 = inGain.current;
-        for (int i = 0; i < n; i += kControlBlock) inGain.tick();
-        const float g1 = inGain.current, dg = (g1 - g0) / (float) n;
-        for (int c = 0; c < numChannels; ++c)
-        {
-            float g = g0, pk = 0.0f, ms = 0.0f;
-            float* x = io[c];
-            if (pi (P::matchMode) != 0)
-                for (int i = 0; i < n; ++i) matchInPow = matchInPow * matchCoef + (double) x[i] * x[i];
-            for (int i = 0; i < n; ++i, g += dg)
-            {
-                x[i] *= g;
-                pk = std::max (pk, std::abs (x[i]));
-                ms += x[i] * x[i];
-            }
-            frame.inPeak[c] = pk;
-            frame.inMs[c] = ms / (float) n;
-        }
+        float pk = 0.0f, ms = 0.0f;
+        const float* x = io[c];
+        for (int i = 0; i < n; ++i) { pk = std::max (pk, std::abs (x[i])); ms += x[i] * x[i]; }
+        frame.inPeak[c] = pk;
+        frame.inMs[c] = ms / (float) n;
+    }
+
+    // Dry tap: the input-stage output, delayed by the chain latency. It is the reference of Level
+    // Match and the dry side of the global mix. The delay line is fed every block whenever the
+    // chain has latency, so switching either feature on is seamless.
+    const bool mixActive = ! (mixAmt.isConstant() && mixAmt.target() >= 1.0f);
+    const bool matchActive = levelMatch.isMeasuring() || ! matchGain.isUnity();
+    const int chainLatency = latencyChain.load (std::memory_order_relaxed);
+    if (mixActive || matchActive)
+    {
+        float* tap[2] { tapDry[0].data(), tapDry[1].data() };
+        dryDelay.setDelay (chainLatency);
+        dryDelay.process (io, tap, numChannels, n);
+    }
+    else if (chainLatency > 0)
+    {
+        dryDelay.setDelay (chainLatency);
+        dryDelay.write (io, numChannels, n);
     }
 
     // External key, converted lazily to M/S if a module needs it.
@@ -222,17 +489,33 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         }
     }
 
-    // Module chain in the user's order. Disabled modules cost nothing.
+    // Module chain in the user's order. A disabled module costs nothing but the delay of its input
+    // by the module's latency, so switching it never shifts timing.
     const auto order = getOrder();
     bool inMs = false;
     for (int slot = 0; slot < numModules; ++slot)
     {
         const int id = order[(size_t) slot];
         auto& fade = moduleFade[(size_t) id];
+        const int lat = moduleLat[(size_t) id];
         const bool wasSilent = fade.isSilent();
         fade.setTarget (moduleEnabled (id));
-        if (fade.isSilent()) { moduleUsSmoothed[(size_t) id] *= 0.9f; continue; }
-        if (wasSilent) resetModule (id);
+        if (fade.isSilent())
+        {
+            moduleUsSmoothed[(size_t) id] *= 0.9f;
+            holdoff[(size_t) id] = 0;
+            if (lat > 0)
+            {
+                bypassDelay[(size_t) id].setDelay (lat);
+                bypassDelay[(size_t) id].process (io, io, numChannels, n);
+            }
+            continue;
+        }
+        if (wasSilent)
+        {
+            resetModule (id);
+            holdoff[(size_t) id] = lat; // the module's first `lat` output samples are not yet valid
+        }
 
         const auto t0 = juce::Time::getHighResolutionTicks();
         const bool wantMs = moduleWantsMs (id);
@@ -259,18 +542,31 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             }
         }
 
+        if (lat > 0) bypassDelay[(size_t) id].setDelay (lat);
         if (fade.isFullyOn())
         {
+            if (lat > 0) bypassDelay[(size_t) id].write (io, numChannels, n);
             runModule (id, io, numChannels, n, k);
         }
         else
         {
-            for (int c = 0; c < numChannels; ++c) std::copy (io[c], io[c] + n, dry[c].data());
+            float* dryPtr[2] { fadeDry[0].data(), fadeDry[1].data() };
+            if (lat > 0)
+            {
+                bypassDelay[(size_t) id].process (io, dryPtr, numChannels, n);
+            }
+            else
+            {
+                for (int c = 0; c < numChannels; ++c) std::copy (io[c], io[c] + n, dryPtr[c]);
+            }
             runModule (id, io, numChannels, n, k);
+            auto& hold = holdoff[(size_t) id];
             for (int i = 0; i < n; ++i)
             {
-                const float w = fade.next();
-                for (int c = 0; c < numChannels; ++c) io[c][i] = dry[c][i] + (io[c][i] - dry[c][i]) * w;
+                float w = 0.0f;
+                if (hold > 0) --hold;
+                else w = fade.next();
+                for (int c = 0; c < numChannels; ++c) io[c][i] = dryPtr[c][i] + (io[c][i] - dryPtr[c][i]) * w;
             }
             if (fade.isSilent()) resetModule (id);
         }
@@ -280,63 +576,16 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     }
     if (inMs) lrToMs (io[0], io[1], n);
 
-    // Master: output gain -> level match -> limiter and meters -> monitor.
+    // After the chain: level match -> global mix -> output gain -> master -> monitor.
     const auto tMaster = juce::Time::getHighResolutionTicks();
-    {
-        const float g0 = outGain.current;
-        for (int i = 0; i < n; i += kControlBlock) outGain.tick();
-        const float g1 = outGain.current, dg = (g1 - g0) / (float) n;
-        for (int c = 0; c < numChannels; ++c)
-        {
-            float g = g0;
-            for (int i = 0; i < n; ++i, g += dg) io[c][i] *= g;
-        }
-    }
-
-    if (pi (P::matchMode) != 0)
-    {
-        for (int c = 0; c < numChannels; ++c)
-            for (int i = 0; i < n; ++i) matchOutPow = matchOutPow * matchCoef + (double) io[c][i] * io[c][i];
-        const double ratio = matchOutPow > 1.0e-12 ? std::sqrt (matchInPow / matchOutPow) : 1.0;
-        matchGain.setTarget ((float) std::clamp (ratio, 0.0631, 15.85)); // +/-24 dB
-    }
-    else
-    {
-        matchGain.setTarget (1.0f);
-        matchInPow = matchOutPow = 0.0;
-    }
-    {
-        const float g0 = matchGain.current;
-        for (int i = 0; i < n; i += kControlBlock) matchGain.tick();
-        const float g1 = matchGain.current;
-        if (g0 != 1.0f || g1 != 1.0f)
-        {
-            const float dg = (g1 - g0) / (float) n;
-            for (int c = 0; c < numChannels; ++c)
-            {
-                float g = g0;
-                for (int i = 0; i < n; ++i, g += dg) io[c][i] *= g;
-            }
-        }
-    }
+    if (matchActive) matchStage (io, numChannels, n);
+    if (mixActive) mixStage (io, numChannels, n);
+    if (! outGain.isUnity()) outGain.apply (io, numChannels, n, clock.phase);
 
     master.process (io, numChannels, n);
     frame.limGr = master.getGainReductionDb();
 
-    if (numChannels == 2)
-    {
-        float* l = io[0];
-        float* r = io[1];
-        switch (pi (P::monitor))
-        {
-            case 1: for (int i = 0; i < n; ++i) { const float m = 0.5f * (l[i] + r[i]); l[i] = r[i] = m; } break;
-            case 2: std::copy (l, l + n, r); break;
-            case 3: std::copy (r, r + n, l); break;
-            case 4: for (int i = 0; i < n; ++i) { const float s = 0.5f * (l[i] - r[i]); l[i] = r[i] = s; } break;
-            case 5: for (int i = 0; i < n; ++i) std::swap (l[i], r[i]); break;
-            default: break;
-        }
-    }
+    if (numChannels == 2 && ! monitor.isIdentity()) monitor.process (io[0], io[1], n);
 
     // Output meters and sample stream.
     for (int c = 0; c < numChannels; ++c)
@@ -369,5 +618,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     for (int m = 0; m < 6; ++m) frame.moduleUs[m] = moduleUsSmoothed[(size_t) m];
     frame.totalUs = (float) ((double) (tEnd - tStart) * ticksToUs);
     frames.push (frame);
+
+    clock.advance (n); // once per block, after every user of the clock
 }
 } // namespace nl
