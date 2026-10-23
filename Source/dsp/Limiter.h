@@ -236,6 +236,17 @@ private:
         return (float) ((u < 0.0 ? -1.0 : 1.0) * (double) c * softF (a));
     }
 
+    // Base-rate guard after the HQ decimator. The decimator removes the harmonics that flatten a clipped
+    // top, so the decimated wave can overshoot the clip level (up to about 2.7 dB on music). This keeps
+    // the output at or below the ceiling: transparent below 0.9 x ceiling, smooth and bounded above.
+    static float guardCeiling (float x, float c) noexcept
+    {
+        constexpr double k = 0.9;
+        const double u = (double) x / (double) c, a = std::abs (u);
+        if (a <= k) return x;
+        return (float) ((u < 0.0 ? -1.0 : 1.0) * (double) c * (k + (1.0 - k) * std::tanh ((a - k) / (1.0 - k))));
+    }
+
     // First-order ADAA clipper blended in as the level approaches the ceiling, so it is transparent
     // below the knee and never exceeds the ceiling (both blend inputs stay below it).
     static float clipAdaa (float x, float xp, float c) noexcept
@@ -339,6 +350,11 @@ private:
         const float* inPtr[2] { inB[0], inB[1] };
         float* wetPtr[2] { wetB[0], wetB[1] };
         hqChain (inPtr, wetPtr, nc, len, c0, dC);
+        for (int j = 0; j < len; ++j)
+        {
+            const float c = c0 + dC * (float) j;
+            for (int ch = 0; ch < nc; ++ch) wetB[ch][j] = guardCeiling (wetB[ch][j], c);
+        }
         for (int j = 0; j < len; ++j)
         {
             const float w = fade.next();

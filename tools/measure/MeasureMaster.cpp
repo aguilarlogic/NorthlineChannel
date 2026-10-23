@@ -157,7 +157,7 @@ NL_MEASURE (master, "Limiter modes (latency, true peak, THD, release), EBU 3341/
     }
     r.endTable();
 
-    r.table ({ "Ceiling", "Full-scale sine (0 dBFS) GR (dB)", "+6 dB sine GR (dB)" });
+    r.table ({ "Ceiling", "Sine at the ceiling, GR (dB)", "Sine 6 dB over the ceiling, GR (dB)" });
     for (double c : { -1.0, -6.0, -12.0 })
     {
         juce::StringArray cells;

@@ -287,7 +287,19 @@ NL_TEST (master_safetyClip)
         const double aN = aliasDb (naive, 2 * N), aE = aliasDb (oe, 2 * N), aH = aliasDb (oh, 2 * N + hq.ms.latency());
         check (aE < aN - 3.0, "Safety Clip Eco (ADAA) aliases at least 3 dB less than the naive soft clipper (5 kHz, +9 dB over)",
                "naive " + juce::String (aN, 1) + " dB, Eco " + juce::String (aE, 1) + " dB re total");
-        check (aH < aE - 6.0, "Safety Clip HQ (4x oversampled) aliases at least 6 dB less than Eco", "HQ " + juce::String (aH, 1) + " dB re total");
+        // The HQ ceiling guard (after the decimator) costs some oversampling gain when the clipper is hard at +9 dB;
+        // the guard is idle at +3 dB, where the 6 dB oversampling benefit is checked.
+        check (aH < aN - 3.0, "Safety Clip HQ aliases at least 3 dB less than the naive soft clipper (+9 dB over, ceiling guard engaged)",
+               "HQ " + juce::String (aH, 1) + " dB re total");
+        check (maxAbs (oh, 2 * N) <= ceil * 1.0000001, "Safety Clip HQ never exceeds the ceiling at the sample level (5 kHz, +9 dB over)",
+               juce::String (linToDb (maxAbs (oh, 2 * N)), 3) + " dBFS");
+        {
+            auto in3 = sine (kFs, f0, (float) (dbToLin (3.0) * ceil), N * 3);
+            Rig eco3 (kFs, 0, false, true, ceilDb), hq3 (kFs, 0, true, true, ceilDb);
+            const double e3 = aliasDb (eco3.run (in3, 256), 2 * N), h3 = aliasDb (hq3.run (in3, 256), 2 * N + hq3.ms.latency());
+            check (h3 < e3 - 6.0, "Safety Clip HQ (4x oversampled) aliases at least 6 dB less than Eco at +3 dB over (guard idle)",
+                   "HQ " + juce::String (h3, 1) + " dB, Eco " + juce::String (e3, 1) + " dB re total");
+        }
     }
 
     // HQ: exact integer latency, linear phase (impulse centre of gravity), transparent below the knee.
