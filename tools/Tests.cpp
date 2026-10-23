@@ -326,25 +326,61 @@ void testRealtimeSafety()
            juce::String (allocationCount.load()) + " allocations");
     p->getStrip().setSampleStreamingEnabled (false);
 
-    // Randomised automation stress.
-    auto q = makeProc (44100.0, 128);
-    juce::AudioBuffer<float> buf (2, 128);
-    bool finite = true;
-    float mx = 0.0f;
-    for (int b = 0; b < 3000; ++b)
+    // Randomised automation stress (every parameter except the limiter's), twice: with the limiter
+    // off, the output is bounded by the gain structure; with the limiter in Brickwall, by its ceiling.
+    for (const bool brickwall : { false, true })
     {
-        if (b % 8 == 0)
-            for (int k = 0; k < 6; ++k)
-            {
-                const int idx = rng.nextInt (P::count);
-                q->param (idx)->setValueNotifyingHost (rng.nextFloat());
-            }
-        fillNoise (buf, rng, rng.nextFloat() < 0.1f ? 4.0f : 0.5f);
-        q->processBlock (buf, midi);
-        for (int c = 0; c < 2; ++c)
-            for (int i = 0; i < 128; ++i) { finite &= std::isfinite (buf.getSample (c, i)); mx = std::max (mx, std::abs (buf.getSample (c, i))); }
+        auto q = makeProc (44100.0, 128);
+        const auto plainOf = [&] (int index) { auto* prm = q->param (index); return prm->convertFrom0to1 (prm->getValue()); };
+        if (brickwall)
+        {
+            setParam (*q, P::limOn, 1);
+            setParam (*q, P::limMode, 1);
+            q->getStrip().reset();
+        }
+        juce::AudioBuffer<float> buf (2, 128);
+        bool finite = true;
+        float worstMarginDb = -300.0f, mx = 0.0f;
+        std::array<float, 400> bounds {}; // per-block bound over the last ~1.2 s (gain smoothers lag)
+        bounds.fill (-300.0f);
+        for (int b = 0; b < 3000; ++b)
+        {
+            if (b % 8 == 0)
+                for (int k = 0; k < 6; ++k)
+                {
+                    const int idx = rng.nextInt (P::count);
+                    if (idx == P::limOn || idx == P::limMode || idx == P::limCeiling || idx == P::limRelease) continue;
+                    q->param (idx)->setValueNotifyingHost (rng.nextFloat());
+                }
+            const float amp = rng.nextFloat() < 0.1f ? 4.0f : 0.5f;
+            fillNoise (buf, rng, amp);
+
+            // Gain structure at the current settings: input and output gain, level match (clamped to
+            // +12 dB), the boost of each EQ band, compressor output and de-esser output gain, plus
+            // 12 dB for the automatic compensation of saturation and compressor make-up.
+            float gainDb = std::max (0.0f, plainOf (P::inGain)) + std::max (0.0f, plainOf (P::outGain)) + 12.0f;
+            if (plainOf (P::matchMode) > 0.5f) gainDb += 12.0f;
+            for (int g : { (int) P::eqLowGain, (int) P::eqMidGain, (int) P::eqToneGain, (int) P::eqHighGain }) gainDb += std::max (0.0f, plainOf (g));
+            gainDb += std::max (0.0f, plainOf (P::compOut)) + std::max (0.0f, plainOf (P::dsOut));
+            bounds[(size_t) (b % (int) bounds.size())] = juce::Decibels::gainToDecibels (amp) + gainDb;
+            const float boundDb = brickwall ? plainOf (P::limCeiling) + 0.01f : *std::max_element (bounds.begin(), bounds.end());
+
+            q->processBlock (buf, midi);
+            float blockPeak = 0.0f;
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < 128; ++i)
+                {
+                    finite &= std::isfinite (buf.getSample (c, i));
+                    blockPeak = std::max (blockPeak, std::abs (buf.getSample (c, i)));
+                }
+            mx = std::max (mx, blockPeak);
+            if (b > 20) worstMarginDb = std::max (worstMarginDb, juce::Decibels::gainToDecibels (blockPeak, -200.0f) - boundDb);
+        }
+        check (finite && worstMarginDb <= 0.0f,
+               brickwall ? "randomised automation stress, Brickwall limiter: output never exceeds the ceiling"
+                         : "randomised automation stress, limiter off: output stays within the gain-structure bound",
+               "max |y| " + juce::String (juce::Decibels::gainToDecibels (mx, -200.0f), 1) + " dBFS, worst margin to the bound " + juce::String (worstMarginDb, 1) + " dB");
     }
-    check (finite && mx < 1000.0f, "randomised automation stress: no NaN/Inf, bounded output", "max |y| " + juce::String (mx, 2));
 }
 
 void testStateAndUndo()
