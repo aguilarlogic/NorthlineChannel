@@ -30,7 +30,7 @@ class PreModule
 public:
     // Latency in samples. Depends only on the quality setting (non-automatable): HQ delays the
     // audio by the oversampler latency whether or not saturation is on.
-    int latency() const noexcept { return pending.hq ? Oversampler4::latency() : 0; }
+    int latency() const noexcept { return pending.hq ? sat::SatSection::kHqLatency : 0; }
 
     void prepare (double sampleRate, int maxBlock)
     {
@@ -49,7 +49,7 @@ public:
     void reset()
     {
         params = pending;
-        phase = 0;
+        clock.reset();
         hp.snapTo (true, params.hpFreq, params.hpSlope, params.hpRes);
         lp.snapTo (false, params.lpFreq, params.lpSlope, params.lpRes);
         hp.updateControl();
@@ -72,18 +72,19 @@ public:
         int i = 0;
         while (i < n)
         {
-            if (phase == 0) tick();
-            const int len = std::min (n - i, kControlBlock - phase);
+            const int pos = (int) clock.phase;
+            if (pos == 0) tick();
+            const int len = std::min (n - i, kControlBlock - pos);
             float* seg[2] { ch[0] + i, numCh > 1 ? ch[1] + i : nullptr };
             bool chOn[2] { true, numCh > 1 };
             if (numCh > 1 && params.filtTarget > 0) { chOn[0] = params.filtTarget == 1; chOn[1] = params.filtTarget == 2; }
 
             runFilter (hp, hpFade, seg, numCh, len, chOn);
-            sat.process (seg, numCh, len, phase);
+            sat.process (seg, numCh, len, pos);
             runFilter (lp, lpFade, seg, numCh, len, chOn);
             if (weightActive) runWeight (seg, numCh, len);
 
-            phase = (phase + len) % kControlBlock;
+            clock.advance (len);
             i += len;
         }
     }
@@ -145,8 +146,11 @@ private:
     {
         const float f = std::exp (weightFreq.current), a = weightAmp.current;
         weightActive = a != 0.0f || weightAmp.target != 0.0f;
-        weightA = makeSvf (SvfType::Bell, fs, f, 0.9f, a);
         weightB = makeSvf (SvfType::Bell, fs, 250.0f, 1.2f, -0.35f * a);
+        // The 250 Hz cut lowers the gain at the bump, so the bump is raised by the same amount:
+        // the response at the Weight frequency is the requested amount in dB.
+        const float cutDb = 20.0f * std::log10 (std::max (1.0e-6f, weightB.magnitude (f, fs)));
+        weightA = makeSvf (SvfType::Bell, fs, f, 0.9f, a - cutDb);
         if (! weightActive) for (auto& c : weightState) { c[0].reset(); c[1].reset(); }
     }
 
@@ -188,7 +192,7 @@ private:
     }
 
     double fs = 48000.0;
-    int phase = 0;
+    ControlClock clock;
     PreParams params, pending;
     SlopeFilter hp, lp;
     Fade hpFade, lpFade;

@@ -25,9 +25,11 @@ class SatSection
 {
 public:
     static constexpr int kSeg = kControlBlock;
+    // HQ latency in base samples: the oversampler plus the zero-phase droop and the ADAA-2 average (both at 4x).
+    static constexpr int kHqLatency = Oversampler4::latency() + (kHqDroopDelay + 1) / 4;
 
     // Latency in base-rate samples; depends only on the quality setting.
-    int latency() const noexcept { return hq ? Oversampler4::latency() : 0; }
+    int latency() const noexcept { return hq ? kHqLatency : 0; }
     bool hqActive() const noexcept { return hq; }
 
     void prepare (double sampleRate)
@@ -35,9 +37,10 @@ public:
         fs = sampleRate;
         cal = &calibration();
         droopEco = makeDroopFir (kEcoOrder, fs, fs);
-        droopHq = makeDroopFir (kHqOrder, 4.0 * fs, fs);
+        droopHq = makeDroopFirZeroPhase (kHqOrder, 4.0 * fs, fs, kHqDroopDelay);
         os.prepare (kSeg, 2);
-        delay.prepare (Oversampler4::latency(), 2);
+        osTwin.prepare (kSeg, 2);
+        delay.prepare (kHqLatency, 2);
         fadeOn.prepare (fs, 15.0f);
         fadeX.prepare (fs, 20.0f);
         driveSm.prepare (fs, 50.0f);
@@ -60,6 +63,7 @@ public:
         autoSm.setTarget (p.autoGain ? 1.0f : 0.0f); autoSm.snap();
         opSm.setTarget (p.opLevel); opSm.snap();
         os.reset();
+        osTwin.reset();
         delay.reset();
         fadeOn.snap (p.on);
         fadeX.snap (false);
@@ -78,6 +82,7 @@ public:
         {
             hq = p.hq;
             os.reset();
+            osTwin.reset();
             delay.reset();
             if (wasActive) resetEngines();
         }
@@ -89,7 +94,7 @@ public:
         opSm.setTarget (p.opLevel);
         if (p.on && ! params.on)
         {
-            if (! isActive()) { resetEngines(); os.reset(); warmLeft = hq ? 2 * Oversampler4::latency() : 8; }
+            if (! isActive()) { resetEngines(); os.reset(); warmLeft = hq ? 2 * kHqLatency : 8; }
             fadeOn.setTarget (true);
         }
         else if (! p.on && params.on)
@@ -117,6 +122,11 @@ public:
         }
         if (! xfActive && wantType != slot[curSlot].type) beginTypeSwitch();
         updateGains (false, toneMoved);
+        for (int k = 0; k < (xfActive ? 2 : 1); ++k)
+        {
+            auto& s = slot[k == 0 ? curSlot : 1 - curSlot];
+            for (int c = 0; c < 2; ++c) updateBias (s.cf, s.st[c]);
+        }
     }
 
     // Processes `len` (<= kControlBlock) samples; `pos` is the position inside the control interval.
@@ -124,7 +134,7 @@ public:
     {
         float dry[2][kSeg];
         if (hq)
-            for (int c = 0; c < numCh; ++c) delay.process (c, io[c], dry[c], len, Oversampler4::latency());
+            for (int c = 0; c < numCh; ++c) delay.process (c, io[c], dry[c], len, kHqLatency);
 
         if (! isActive())
         {
@@ -170,8 +180,16 @@ public:
                     for (int i = 0; i < 4 * len; ++i) outA[i] += (outB[i] - outA[i]) * xv[i >> 2];
                 }
                 os.down (c, outA, wetA, len);
+                // Linear twin of the oversampled path (droop FIR and ADAA average at 4x, same decimator), so the
+                // mix is phase-coherent with the wet path; the integer dry delay alone is not.
+                float lin4[4 * kSeg], lin[kSeg];
+                linearTwin4 (c, up, lin4, 4 * len);
+                osTwin.down (c, lin4, lin, len);
                 for (int i = 0; i < len; ++i)
-                    x[i] = dry[c][i] + sf[i] * mv[i] * (wetA[i] - dry[c][i]);
+                {
+                    const float mixed = lin[i] + mv[i] * (wetA[i] - lin[i]);
+                    x[i] = dry[c][i] + sf[i] * (mixed - dry[c][i]);
+                }
             }
             else
             {
@@ -217,6 +235,31 @@ private:
         void reset() { std::fill (std::begin (hist), std::end (hist), 0.0f); pos = 0; prev = 0.0f; }
     };
 
+    struct Twin4
+    {
+        float hist[64] {};
+        int pos = 0;
+        float d1 = 0.0f, d2 = 0.0f;
+        void reset() { std::fill (std::begin (hist), std::end (hist), 0.0f); pos = 0; d1 = d2 = 0.0f; }
+    };
+
+    // Linear response of the 4x path: droop FIR, then the order-2 ADAA average (u + x1 + x2) / 3.
+    void linearTwin4 (int c, const float* up4, float* lin4, int n4) noexcept
+    {
+        auto& tw = twin4[c];
+        const auto& d = droopHq;
+        for (int i = 0; i < n4; ++i)
+        {
+            tw.hist[tw.pos] = up4[i];
+            float acc = 0.0f;
+            for (int k = 0; k < d.taps; ++k) acc += d.h[(size_t) k] * tw.hist[(tw.pos - k) & 63];
+            tw.pos = (tw.pos + 1) & 63;
+            lin4[i] = (acc + tw.d1 + tw.d2) * (1.0f / 3.0f);
+            tw.d2 = tw.d1;
+            tw.d1 = acc;
+        }
+    }
+
     bool isActive() const noexcept { return fadeOn.target > 0.5f || fadeOn.value > 0.0f || warmLeft > 0; }
 
     void shape (Slot& s, int c, const float* in, float* out, int n, const Ramp& r) noexcept
@@ -247,6 +290,7 @@ private:
         configureSlot (slot[0], wantType);
         slot[1].type = -1;
         for (auto& t : twin) t.reset();
+        for (auto& t : twin4) t.reset();
         mFrom = mTo = mixSm.current;
     }
 
@@ -266,6 +310,7 @@ private:
         s.gOutFrom = snap ? std::pow (10.0, d.gOutDb / 20.0) : s.gOutTo;
         s.gInTo = std::pow (10.0, d.gInDb / 20.0);
         s.gOutTo = std::pow (10.0, d.gOutDb / 20.0);
+        s.cf.biasScale = d.biasScale;
         if (std::abs (d.lsTrim - s.lsTrim) > 1.0e-3f || std::abs (d.hsTrim - s.hsTrim) > 1.0e-3f)
         {
             s.lsTrim = d.lsTrim;
@@ -289,12 +334,13 @@ private:
     double fs = 48000.0;
     const std::array<CalTable, shaper::numTypes>* cal = nullptr;
     DroopFir droopEco, droopHq;
-    Oversampler4 os;
+    Oversampler4 os, osTwin;
     DelayLine delay;
     Fade fadeOn, fadeX;
     Smoothed driveSm, toneSm, mixSm, autoSm, opSm;
     Slot slot[2];
     Twin twin[2];
+    Twin4 twin4[2];
     SatParams params;
     int curSlot = 0, wantType = 0, warmLeft = 0;
     bool hq = false, xfActive = false;

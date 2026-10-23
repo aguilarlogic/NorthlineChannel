@@ -180,21 +180,21 @@ private:
 constexpr double kDriveMinDb = -12.0;
 
 // Shaper gain at 100 % drive, per type. Chosen so that the Eco (1x) alias level for a 5 kHz sine
-// at -6 dBFS stays at or below the targets in ROADMAP section 1 (about -40 dB; Crush -30 dB):
-// a heavier drive saturates harder but cannot be anti-aliased at 1x and zero latency. The
-// numbers are measured in the "pre" measurement suite; HQ has much more headroom than this.
+// at -6 dBFS stays at or below -40 dB (Crush -30 dB, ROADMAP section 1): a heavier drive saturates
+// harder but cannot be anti-aliased at 1x and zero latency. The numbers are measured in the "pre"
+// measurement suite; HQ has much more headroom than this.
 inline double driveMaxDb (int type) noexcept
 {
     switch (type)
     {
         case Even:        return 10.0;
         case Heavy:       return 11.0;
-        case Crush:       return 8.0;
-        case Tape:        return 9.5;
+        case Crush:       return 7.5;
+        case Tape:        return 8.5;
         case Tube:        return 10.0;
         case Odd:
         case Transformer:
-        default:          return 7.5;
+        default:          return 7.0;
     }
 }
 

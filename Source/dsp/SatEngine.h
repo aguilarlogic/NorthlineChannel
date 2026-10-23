@@ -20,6 +20,8 @@ constexpr float kShelfQ = 0.70710678f;
 
 // ADAA order: Eco (1x) uses order 1, because order 2 has a null at fs/3 (see Saturation.h).
 constexpr int kEcoOrder = 1, kHqOrder = 2;
+// Zero-phase droop FIR delay on the 4x path (4x samples): 7 + the ADAA-2 average (1) = 8 = 2 base samples.
+constexpr int kHqDroopDelay = 11;
 
 struct TypeSpec
 {
@@ -44,15 +46,23 @@ inline TypeSpec spec (int type) noexcept
     }
 }
 
-// Tube: envelope-driven bias. b = kBiasMax * env / (env + kBiasKnee) where env follows |shaper input|.
-constexpr double kTubeBiasMax = 0.55, kTubeBiasKnee = 0.4;
+// Even bias (static) and Tube bias (envelope-driven, b = kTubeBiasMax * env / (env + kTubeBiasKnee) with env
+// following |shaper input|). Both are scaled by biasWeight(U), where U = drive + operating level (dB) is the
+// shaper level the calibration is keyed by. An asymmetric curve makes even harmonics in proportion to its
+// bias at low level, so the bias is absent at a clean setting (THD at the operating level < -70 dB) and
+// builds up with the drive.
+constexpr double kEvenBias = 0.45, kTubeBiasMax = 0.55, kTubeBiasKnee = 0.4;
+constexpr double kBiasU0 = -22.0, kBiasU1 = -8.0;
+// Tape: the extra high-frequency loss (dB, at full envelope) fades in with e = env / (env + kTapeKnee).
+constexpr double kTapeKnee = 0.4, kTapeDynHsDb = -3.0, kTapeBumpHz = 60.0, kTapeBumpDb = 1.5;
+inline double biasWeight (double U) noexcept { return std::clamp ((U - kBiasU0) / (kBiasU1 - kBiasU0), 0.0, 1.0); }
 
 // Minimum-phase FIR that pre-compensates the droop of order-N ADAA ((1 + z^-1) / 2 for order 1,
 // (1 + z^-1 + z^-2) / 3 for order 2): the target gain is the inverse droop up to fs/3 (16 kHz at 48 kHz), then
 // tapers smoothly to 0 dB by 0.46 fs, so the ADAA path is flat to 16 kHz without boosting
 // whatever sits near Nyquist ahead of the shaper. Designed with the real-cepstrum method;
 // `taps` coefficients are returned (zero latency, causal).
-constexpr int kMaxDroopTaps = 32;
+constexpr int kMaxDroopTaps = 64;
 
 struct DroopFir
 {
@@ -60,11 +70,12 @@ struct DroopFir
     int taps = 0;
 };
 
-inline std::array<float, kMaxDroopTaps> designDroopFirTaps (int order, double rate, double baseFs, int taps)
+// Target log-gain of the droop correction for order-N ADAA at `rate`, 512-point grid (the magnitude of the
+// inverse droop up to fs/3, tapering smoothly to 0 dB by 0.46 fs; see designDroopFirTaps).
+inline std::vector<double> droopLogTarget (int order, double rate, double f1, double f2)
 {
     constexpr int N = 512;
-    std::vector<double> L (N), c (N), h (N);
-    const double f1 = baseFs / 3.0, f2 = 0.46 * baseFs;
+    std::vector<double> L (N);
     auto droopLn = [&] (double f)
     {
         const double w = 2.0 * kPiD * f / rate;
@@ -79,6 +90,13 @@ inline std::array<float, kMaxDroopTaps> designDroopFirTaps (int order, double ra
         else l = 0.0;
         L[(size_t) k] = l;
     }
+    return L;
+}
+
+inline std::array<float, kMaxDroopTaps> designDroopFirTaps (int order, double rate, double baseFs, int taps)
+{
+    constexpr int N = 512;
+    std::vector<double> L = droopLogTarget (order, rate, baseFs / 3.0, 0.46 * baseFs), c (N), h (N);
     // real cepstrum, folded to a causal (minimum-phase) cepstrum
     for (int n = 0; n < N; ++n)
     {
@@ -109,8 +127,30 @@ inline std::array<float, kMaxDroopTaps> designDroopFirTaps (int order, double ra
 inline DroopFir makeDroopFir (int order, double rate, double baseFs)
 {
     DroopFir d;
-    d.taps = rate > 1.5 * baseFs ? 12 : kMaxDroopTaps;
+    d.taps = rate > 1.5 * baseFs ? 12 : 32;
     d.h = designDroopFirTaps (order, rate, baseFs, d.taps);
+    return d;
+}
+
+// Zero-phase variant for the oversampled path: the same target magnitude, realised as a symmetric
+// Hann-windowed FIR with its centre at sample `delay`. The path delay is then exact: `delay` plus the
+// one-sample average of ADAA order 2, so it is an integer number of base samples when delay + 1 is a
+// multiple of 4 (kHqDroopDelay). Taps: 2 * delay + 1 (at most kMaxDroopTaps).
+inline DroopFir makeDroopFirZeroPhase (int order, double rate, double baseFs, int delay)
+{
+    constexpr int N = 512;
+    // Taper well above the passband edge (the windowed FIR smooths the taper into the band it borders).
+    const std::vector<double> L = droopLogTarget (order, rate, 0.5 * baseFs, 0.625 * baseFs);
+    DroopFir d;
+    d.taps = 2 * delay + 1;
+    for (int m = 0; m < d.taps; ++m)
+    {
+        const int n = m - delay;
+        double acc = 0.0;
+        for (int k = 0; k < N; ++k) acc += std::exp (L[(size_t) k]) * std::cos (2.0 * kPiD * (double) k * n / N);
+        const double w = 0.5 * (1.0 + std::cos (kPiD * (double) n / (delay + 1.0)));
+        d.h[(size_t) m] = (float) (acc / N * w);
+    }
     return d;
 }
 
@@ -126,6 +166,8 @@ struct Coefs
     int type = 0, order = 1;
     double rate = 48000.0;
     bool dc = false, tube = false, preLSOn = false, preHSOn = false, postLSOn = false;
+    bool dynHF = false, bump = false; // Tape: level-dependent HF loss and the head bump
+    SvfCoefs dynHS, bumpBell;
     DroopFir droop;
     SvfCoefs preLS, preHS, postLS, postHS;
     bool tiltOn = false;
@@ -134,6 +176,7 @@ struct Coefs
     OnePole dcCoef;
     float envAtt = 0.0f, envRel = 0.0f;
     float lsTrim = 0.0f, hsTrim = 0.0f;
+    float biasScale = 1.0f; // biasWeight() of the current shaper level
 
     void configure (int t, double rate_, int order_, const DroopFir& droopFir)
     {
@@ -143,6 +186,9 @@ struct Coefs
         const auto sp = spec (t);
         dc = sp.dc;
         tube = t == shaper::Tube;
+        dynHF = bump = t == shaper::Tape;
+        if (dynHF) dynHS = makeSvf (SvfType::HighShelf, rate, 5500.0f, kShelfQ, (float) kTapeDynHsDb);
+        if (bump) bumpBell = makeSvf (SvfType::Bell, rate, (float) kTapeBumpHz, 1.5f, (float) kTapeBumpDb);
         preLSOn = sp.lsDb != 0.0;
         preHSOn = sp.hsDb != 0.0;
         postLSOn = sp.trimLS;
@@ -163,16 +209,18 @@ struct Coefs
         updatePost();
     }
 
-    // tone in -1 .. 1: +1 pre-emphasises the highs (harmonics move up), -1 the lows.
+    // tone in -1 .. 1: +1 moves harmonics up. The shaper sees the lows raised and the highs cut, so the
+    // harmonics it generates at high orders come out relatively louder after the matching post tilt.
+    // -1 does the reverse (harmonics toward the lows).
     void setTone (float t)
     {
         tiltOn = std::abs (t) > 1.0e-4f;
         if (! tiltOn) return;
         const float a = 6.0f * t;
-        tPreLS = makeSvf (SvfType::LowShelf, rate, kTiltFreq, kShelfQ, -a);
-        tPreHS = makeSvf (SvfType::HighShelf, rate, kTiltFreq, kShelfQ, a);
-        tPostLS = makeSvf (SvfType::LowShelf, rate, kTiltFreq, kShelfQ, a);
-        tPostHS = makeSvf (SvfType::HighShelf, rate, kTiltFreq, kShelfQ, -a);
+        tPreLS = makeSvf (SvfType::LowShelf, rate, kTiltFreq, kShelfQ, a);
+        tPreHS = makeSvf (SvfType::HighShelf, rate, kTiltFreq, kShelfQ, -a);
+        tPostLS = makeSvf (SvfType::LowShelf, rate, kTiltFreq, kShelfQ, -a);
+        tPostHS = makeSvf (SvfType::HighShelf, rate, kTiltFreq, kShelfQ, a);
         // keep the pink-noise power into the shaper constant
         const double p = 0.5 * (std::pow (10.0, a / 10.0) + std::pow (10.0, -a / 10.0));
         tPreGain = (float) (1.0 / std::sqrt (p));
@@ -194,7 +242,7 @@ struct State
 {
     float droopHist[64] {};
     int droopPos = 0;
-    SvfState preLS, preHS, postLS, postHS, tPreLS, tPreHS, tPostLS, tPostHS;
+    SvfState preLS, preHS, postLS, postHS, tPreLS, tPreHS, tPostLS, tPostHS, bumpSt, dynSt;
     OnePole dc;
     float env = 0.0f;
     shaper::Adaa<shaper::Sig> sig;
@@ -207,11 +255,11 @@ struct State
     {
         std::fill (std::begin (droopHist), std::end (droopHist), 0.0f);
         droopPos = 0;
-        for (auto* s : { &preLS, &preHS, &postLS, &postHS, &tPreLS, &tPreHS, &tPostLS, &tPostHS }) s->reset();
+        for (auto* s : { &preLS, &preHS, &postLS, &postHS, &tPreLS, &tPreHS, &tPostLS, &tPostHS, &bumpSt, &dynSt }) s->reset();
         dc.reset();
         dc.G = c.dcCoef.G;
         env = 0.0f;
-        biased.s.set (c.tube ? 0.0 : 0.45);
+        biased.s.set (0.0); // runSegment() sets the bias before every segment
         for (auto* a : { &sig.order, &biased.order, &cubic.order, &clip.order, &atn.order }) *a = c.order;
         sig.reset(); biased.reset(); cubic.reset(); clip.reset(); atn.reset();
     }
@@ -220,15 +268,19 @@ struct State
     void syncCoefs (const Coefs& c) noexcept { dc.G = c.dcCoef.G; }
 };
 
+// Sets the bias of the Even / Tube shaper. Called once per control tick (and per calibration segment), never
+// per host block or per sample, so the envelope-driven bias is the same whatever the host block split.
+inline void updateBias (const Coefs& c, State& st) noexcept
+{
+    if (c.type != shaper::Even && c.type != shaper::Tube) return;
+    const double base = c.tube ? kTubeBiasMax * st.env / (st.env + kTubeBiasKnee) : kEvenBias;
+    st.biased.s.set (base * c.biasScale);
+    st.biased.rebias();
+}
+
 template <class S, bool Tube>
 inline void runSegment (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const float* in, float* out, int n, Ramp r) noexcept
 {
-    if constexpr (Tube)
-    {
-        const double b = kTubeBiasMax * st.env / (st.env + kTubeBiasKnee);
-        adaa.s.set (b);
-        adaa.rebias();
-    }
     for (int i = 0; i < n; ++i)
     {
         float x = in[i];
@@ -242,7 +294,7 @@ inline void runSegment (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const 
         x = acc;
         const double u = (double) x * r.g;
         r.g += r.dg;
-        if constexpr (Tube)
+        if (Tube || c.dynHF) // envelope of the shaper input: Tube bias, Tape HF loss
         {
             const float a = (float) std::abs (u);
             st.env += (a - st.env) * (a > st.env ? 1.0f - c.envAtt : 1.0f - c.envRel);
@@ -264,6 +316,12 @@ inline void runSegment (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const 
         r.go += r.dgo;
         if (c.postLSOn) y = st.postLS.process (y, c.postLS);
         y = st.postHS.process (y, c.postHS);
+        if (c.bump) y = st.bumpSt.process (y, c.bumpBell);
+        if (c.dynHF)
+        {
+            const float e = st.env / (st.env + (float) kTapeKnee);
+            y += e * (st.dynSt.process (y, c.dynHS) - y);
+        }
         if (c.tiltOn) y = st.tPostLS.process (st.tPostHS.process (y, c.tPostHS), c.tPostLS) * c.tPostGain;
         out[i] = y;
     }
@@ -401,6 +459,7 @@ inline CalTable computeTable (int type)
     for (int k = 0; k < kCalPoints; ++k)
     {
         const double U = kCalU0 + kCalDU * k;
+        cf.biasScale = (float) biasWeight (U);
         Ramp r;
         r.g = std::pow (10.0, (U - kCalRefLevel) / 20.0);
 
@@ -411,7 +470,10 @@ inline CalTable computeTable (int type)
             st.reset (cf);
             out.assign (s.x.size(), 0.0f);
             for (size_t p = 0; p < s.x.size(); p += 32)
+            {
+                updateBias (cf, st);
                 process (st, cf, s.x.data() + p, out.data() + p, (int) std::min<size_t> (32, s.x.size() - p), r);
+            }
             d[i] = 20.0 * std::log10 (s.rms / std::max (1.0e-12, acRms (out, (size_t) warm)));
         }
 
@@ -479,7 +541,7 @@ inline const std::array<CalTable, shaper::numTypes>& calibration()
 struct DriveSetting
 {
     double gInDb = 0.0, gOutDb = 0.0;
-    float lsTrim = 0.0f, hsTrim = 0.0f;
+    float lsTrim = 0.0f, hsTrim = 0.0f, biasScale = 1.0f;
 };
 
 inline DriveSetting driveSetting (const std::array<CalTable, shaper::numTypes>& cal, int type, double driveDb, double opLevelDb, double autoGain) noexcept
@@ -488,6 +550,7 @@ inline DriveSetting driveSetting (const std::array<CalTable, shaper::numTypes>& 
     DriveSetting d;
     d.gInDb = driveDb;
     const double U = driveDb + opLevelDb;
+    d.biasScale = (float) biasWeight (U);
     const auto& t = cal[(size_t) type];
     const double autoOut = lookup (t.c, U) + (opLevelDb - kCalRefLevel);
     d.gOutDb = -shaper::kDriveMinDb + (autoOut + shaper::kDriveMinDb) * autoGain;
