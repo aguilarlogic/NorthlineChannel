@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Filters.h"
 #include <algorithm>
@@ -326,8 +326,8 @@ struct Options
     double accept3 = 0.22;      // dB: 3-value refinement is kept if below this
     int outer3 = 3, inner3 = 4; // refinement effort
     int outer5 = 4, inner5 = 5;
-    double polishAbove = 0.3;   // dB: extra rounds if the five-value fit is still above this
-    int outerPolish = 8;
+    double polishAbove = 0.25;   // dB: extra rounds if the five-value fit is still above this
+    int outerPolish = 16;
 };
 
 struct Result
@@ -542,6 +542,7 @@ inline Result designBand (const Context& ctx, const Shape& s, const Options& opt
     return res;
 }
 } // namespace nl::eqd
+
 
 
 
