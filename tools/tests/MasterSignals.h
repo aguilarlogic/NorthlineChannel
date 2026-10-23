@@ -289,7 +289,7 @@ struct Rig
     }
     void setOn (bool on) { snap.v[(size_t) P::limOn] = on ? 1.0f : 0.0f; }
     void setCeiling (double db) { snap.v[(size_t) P::limCeiling] = (float) db; }
-    void setRelease (double ms) { snap.v[(size_t) P::limRelease] = (float) ms; }
+    void setRelease (double releaseMs) { snap.v[(size_t) P::limRelease] = (float) releaseMs; }
 
     // Processes `in` in blocks; `events` (sorted by sample) are applied before the block that
     // contains their sample, like the host would.
