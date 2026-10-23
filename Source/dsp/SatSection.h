@@ -35,7 +35,8 @@ public:
     void prepare (double sampleRate)
     {
         fs = sampleRate;
-        cal = &calibration();
+        cal = &calibration (false);
+        calHq = &calibration (true);
         droopEco = makeDroopFir (kEcoOrder, fs, fs);
         droopHq = makeDroopFirZeroPhase (kHqOrder, 4.0 * fs, fs, kHqDroopDelay);
         os.prepare (kSeg, 2);
@@ -305,7 +306,8 @@ private:
 
     void applyGains (Slot& s, bool snap)
     {
-        const auto d = driveSetting (*cal, s.type, shaper::driveDb (s.type, driveSm.current), (double) opSm.current, (double) autoSm.current);
+        const auto& table = hq ? *calHq : *cal;
+        const auto d = driveSetting (table, s.type, shaper::driveDb (s.type, driveSm.current), (double) opSm.current, (double) autoSm.current);
         s.gInFrom = snap ? std::pow (10.0, d.gInDb / 20.0) : s.gInTo;
         s.gOutFrom = snap ? std::pow (10.0, d.gOutDb / 20.0) : s.gOutTo;
         s.gInTo = std::pow (10.0, d.gInDb / 20.0);
@@ -333,6 +335,7 @@ private:
 
     double fs = 48000.0;
     const std::array<CalTable, shaper::numTypes>* cal = nullptr;
+    const std::array<CalTable, shaper::numTypes>* calHq = nullptr;
     DroopFir droopEco, droopHq;
     Oversampler4 os, osTwin;
     DelayLine delay;

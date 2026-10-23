@@ -28,8 +28,8 @@ struct PreParams
 class PreModule
 {
 public:
-    // Latency in samples. Depends only on the quality setting (non-automatable): HQ delays the
-    // audio by the oversampler latency whether or not saturation is on.
+    // Latency in samples. Depends only on the quality setting (non-automatable): HQ delays the audio by
+    // sat::SatSection::kHqLatency (48) whether or not saturation is on.
     int latency() const noexcept { return pending.hq ? sat::SatSection::kHqLatency : 0; }
 
     void prepare (double sampleRate, int maxBlock)

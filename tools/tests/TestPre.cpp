@@ -45,6 +45,7 @@ NL_TEST (pre_stagingWithinHalfDb)
 {
     const size_t warm = (size_t) (0.3 * kFs), len = (size_t) (0.5 * kFs);
     const double freqs[3] { 100.0, 1000.0, 5000.0 };
+    for (bool hq : { false, true })
     for (int t = 0; t < kNumTypes; ++t)
     {
         double worst = 0.0;
@@ -54,7 +55,7 @@ NL_TEST (pre_stagingWithinHalfDb)
             {
                 const auto x = s < 3 ? sineRmsVec (kFs, binExact (freqs[s], kFs, 4096), kOpLevel, warm + len)
                                      : pinkVec (warm + len, kOpLevel, 7);
-                const auto y = render (satParams (t, (float) d), kFs, x);
+                const auto y = render (satParams (t, (float) d, hq), kFs, x);
                 const double dl = std::abs (rmsDbOf (y, warm, warm + len) - rmsDbOf (x, warm, warm + len));
                 if (dl > worst)
                 {
@@ -62,7 +63,7 @@ NL_TEST (pre_stagingWithinHalfDb)
                     where = juce::String (d) + " % drive, " + (s < 3 ? juce::String (freqs[s], 0) + " Hz" : juce::String ("pink"));
                 }
             }
-        check (worst <= 0.5, juce::String (typeName (t)) + ": level change within 0.5 dB at the operating level, 0 to 100 % drive",
+        check (worst <= 0.5, juce::String (typeName (t)) + (hq ? " HQ" : " Eco") + ": level change within 0.5 dB at the operating level, 0 to 100 % drive",
                "worst " + juce::String (worst, 2) + " dB (" + where + ")");
     }
 }
@@ -71,14 +72,15 @@ NL_TEST (pre_zeroDriveNearClean)
 {
     const size_t warm = (size_t) (0.3 * kFs), N = 16384;
     const double f = binExact (1000.0, kFs, N);
+    for (bool hq : { false, true })
     for (int t = 0; t < kNumTypes; ++t)
     {
-        const double small = gainDb (satParams (t, 0.0f), kFs, 1000.0, -40.0);
-        check (std::abs (small) <= 0.1, juce::String (typeName (t)) + ": small-signal gain at 0 % drive is 0 +- 0.1 dB",
+        const double small = gainDb (satParams (t, 0.0f, hq), kFs, 1000.0, -40.0);
+        check (std::abs (small) <= 0.1, juce::String (typeName (t)) + (hq ? " HQ" : " Eco") + ": small-signal gain at 0 % drive is 0 +- 0.1 dB",
                juce::String (small, 3) + " dB");
-        const auto y = render (satParams (t, 0.0f), kFs, sineRmsVec (kFs, f, kOpLevel, warm + N));
+        const auto y = render (satParams (t, 0.0f, hq), kFs, sineRmsVec (kFs, f, kOpLevel, warm + N));
         const double thd = thdDb (y, warm, kFs, f, (int) N);
-        check (thd <= -70.0, juce::String (typeName (t)) + ": THD at the operating level, 0 % drive, is -70 dB or better",
+        check (thd <= -70.0, juce::String (typeName (t)) + (hq ? " HQ" : " Eco") + ": THD at the operating level, 0 % drive, is -70 dB or better",
                juce::String (thd, 1) + " dB");
     }
 }
@@ -215,7 +217,7 @@ NL_TEST (pre_determinismBlockSizes)
     // Every type, Eco and HQ, filters and Weight on, drive / tone / mix / frequency automated every 2048 samples.
     const size_t n = 16384;
     const auto x = pinkVec (n, -18.0, 11);
-    const int blocks[] { 1, 7, 37, 64, 511, 2048 };
+    const int blocks[] { 1, 7, 32, 37, 64, 511, 512, 2048 };
     double worst = 0.0;
     juce::String where;
     for (int t = 0; t < kNumTypes; ++t)
@@ -250,7 +252,7 @@ NL_TEST (pre_determinismBlockSizes)
                 if (d > worst) { worst = d; where = juce::String (typeName (t)) + (hq ? " HQ" : " Eco") + ", block " + juce::String (b); }
             }
         }
-    check (worst <= 1.0e-6, "PRE output is identical across block sizes 1, 7, 37, 64, 511, 2048 (every type, Eco and HQ, automated)",
+    check (worst <= 1.0e-6, "PRE output is identical across block sizes 1, 7, 32, 37, 64, 511, 512, 2048 (every type, Eco and HQ, automated)",
            "max diff " + juce::String (worst, 9) + " (" + where + ")");
 }
 

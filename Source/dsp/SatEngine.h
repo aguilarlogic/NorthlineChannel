@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Oversampling.h"
 #include "Saturation.h"
 #include <array>
 #include <complex>
@@ -151,6 +152,10 @@ inline DroopFir makeDroopFirZeroPhase (int order, double rate, double baseFs, in
         const double w = 0.5 * (1.0 + std::cos (kPiD * (double) n / (delay + 1.0)));
         d.h[(size_t) m] = (float) (acc / N * w);
     }
+    // the window changes the DC gain: normalise so the path has exactly unity gain at DC
+    double sum = 0.0;
+    for (int m = 0; m < d.taps; ++m) sum += d.h[(size_t) m];
+    for (int m = 0; m < d.taps; ++m) d.h[(size_t) m] = (float) (d.h[(size_t) m] / sum);
     return d;
 }
 
@@ -406,7 +411,7 @@ inline double acRms (const std::vector<float>& v, size_t from)
     return std::sqrt (std::max (0.0, s / (double) n - m * m));
 }
 
-inline CalTable computeTable (int type)
+inline CalTable computeTable (int type, bool hq)
 {
     constexpr double fs = 48000.0;
     const double sigma = std::pow (10.0, kCalRefLevel / 20.0);
@@ -452,8 +457,11 @@ inline CalTable computeTable (int type)
     }
 
     Coefs cf;
-    cf.configure (type, fs, kEcoOrder, makeDroopFir (kEcoOrder, fs, fs));
+    if (hq) cf.configure (type, 4.0 * fs, kHqOrder, makeDroopFirZeroPhase (kHqOrder, 4.0 * fs, fs, kHqDroopDelay));
+    else cf.configure (type, fs, kEcoOrder, makeDroopFir (kEcoOrder, fs, fs));
     State st;
+    Oversampler4 os;
+    os.prepare (32, 1);
     std::vector<float> out;
     CalTable tab;
     for (int k = 0; k < kCalPoints; ++k)
@@ -468,11 +476,23 @@ inline CalTable computeTable (int type)
         {
             const auto& s = stim[(size_t) i];
             st.reset (cf);
+            os.reset();
             out.assign (s.x.size(), 0.0f);
             for (size_t p = 0; p < s.x.size(); p += 32)
             {
                 updateBias (cf, st);
-                process (st, cf, s.x.data() + p, out.data() + p, (int) std::min<size_t> (32, s.x.size() - p), r);
+                const int n = (int) std::min<size_t> (32, s.x.size() - p);
+                if (hq)
+                {
+                    float up[4 * 32], o4[4 * 32];
+                    os.up (0, s.x.data() + p, up, n);
+                    process (st, cf, up, o4, 4 * n, r);
+                    os.down (0, o4, out.data() + p, n);
+                }
+                else
+                {
+                    process (st, cf, s.x.data() + p, out.data() + p, n, r);
+                }
             }
             d[i] = 20.0 * std::log10 (s.rms / std::max (1.0e-12, acRms (out, (size_t) warm)));
         }
@@ -523,18 +543,23 @@ inline CalTable computeTable (int type)
 
 // All tables, computed once per process on first use (call from prepare(), never from the
 // audio thread). Each type runs on its own thread; the result does not depend on scheduling.
-inline const std::array<CalTable, shaper::numTypes>& calibration()
+// hq = false: the 1x chain (ADAA order 1); hq = true: the oversampled chain (ADAA order 2, 4x path).
+inline std::array<CalTable, shaper::numTypes> buildCalibration (bool hq)
 {
-    static const std::array<CalTable, shaper::numTypes> tables = [] {
-        std::array<CalTable, shaper::numTypes> t;
-        std::vector<std::thread> threads;
-        for (int i = 1; i < shaper::numTypes; ++i)
-            threads.emplace_back ([&t, i] { t[(size_t) i] = detail::computeTable (i); });
-        t[0] = detail::computeTable (0);
-        for (auto& th : threads) th.join();
-        return t;
-    }();
-    return tables;
+    std::array<CalTable, shaper::numTypes> t;
+    std::vector<std::thread> threads;
+    for (int i = 1; i < shaper::numTypes; ++i)
+        threads.emplace_back ([&t, i, hq] { t[(size_t) i] = detail::computeTable (i, hq); });
+    t[0] = detail::computeTable (0, hq);
+    for (auto& th : threads) th.join();
+    return t;
+}
+
+inline const std::array<CalTable, shaper::numTypes>& calibration (bool hq)
+{
+    static const auto eco = buildCalibration (false);
+    static const auto oversampled = buildCalibration (true);
+    return hq ? oversampled : eco;
 }
 
 // Gain staging for one drive setting.
