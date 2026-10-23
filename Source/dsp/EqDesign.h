@@ -335,6 +335,7 @@ struct Result
     SvfParams p;
     double maxErrDb = 0.0; // on the solver grid
     int stage = 0;         // 0 identity, 1 closed form, 2 three-value refinement, 3 five-value refinement, 4 fallback
+    bool refined = false;  // the refinement ran (stages 2 to 4 were attempted)
 };
 
 // Matched-z poles of the analog denominator mapped to the SVF integrator gain g and damping k.
@@ -428,8 +429,11 @@ inline void buildFit (const Context& ctx, const Analog& an, detail::Fit& fit) no
     fit.n = n;
 }
 
-inline Result designBand (const Context& ctx, const Shape& s, const Options& opt = {}) noexcept
+// With allowRefine false and the closed form above the tolerance, the closed form is returned and
+// wantsRefine is set: the caller retries on a later control tick (the refinement is budgeted per tick).
+inline Result designBandBudgeted (const Context& ctx, const Shape& s, bool allowRefine, bool& wantsRefine, const Options& opt = {}) noexcept
 {
+    wantsRefine = false;
     Result res;
     const double fs = ctx.fs;
     Shape sh = s;
@@ -494,8 +498,11 @@ inline Result designBand (const Context& ctx, const Shape& s, const Options& opt
     double bestErr = e[bi];
     int stage = 1;
 
-    if (! (bestErr <= opt.acceptClosed))
+    const bool needRefine = ! (bestErr <= opt.acceptClosed);
+    wantsRefine = needRefine && ! allowRefine;
+    if (needRefine && allowRefine)
     {
+        res.refined = true;
         // Stage 2: DC and Nyquist exact (free: ln g, ln k, p).
         for (int c = 0; c < 2; ++c)
         {
@@ -541,6 +548,12 @@ inline Result designBand (const Context& ctx, const Shape& s, const Options& opt
     res.maxErrDb = bestErr;
     res.stage = stage;
     return res;
+}
+
+inline Result designBand (const Context& ctx, const Shape& s, const Options& opt = {}) noexcept
+{
+    bool wants = false;
+    return designBandBudgeted (ctx, s, true, wants, opt);
 }
 } // namespace nl::eqd
 

@@ -236,6 +236,34 @@ double cpuPercent (double fs, const EqParams& a, const EqParams& b, bool glide, 
     }
     return 100.0 * best / ((double) n / fs);
 }
+struct RefinePick
+{
+    int band = 0, type = 0;
+    float freq = 0.0f, gain = 0.0f, q = 1.0f;
+};
+
+// One setting per band whose closed form misses the tolerance (the full design runs the refinement).
+std::vector<RefinePick> refinePicks (const eqd::Context& ctx)
+{
+    std::vector<RefinePick> picks;
+    for (int band = 0; band < 4; ++band)
+    {
+        RefinePick found;
+        bool ok = false;
+        for (int type = 0; type < 3 && ! ok; ++type)
+            for (float freq : { 60.0f, 150.0f, 400.0f, 1000.0f, 2500.0f, 6000.0f, 12000.0f })
+                for (float gain : { -15.0f, -9.0f, 9.0f, 15.0f })
+                    for (float q : { 0.7f, 1.4f, 3.0f })
+                    {
+                        if (ok) break;
+                        const auto bk = EqModule::kindOf (band, type, q);
+                        const eqd::Shape s { bk.kind, freq, gain, EqModule::effectiveQ (bk, gain, 0.0f) };
+                        if (eqd::designBand (ctx, s).stage >= 2) { found = { band, type, freq, gain, q }; ok = true; }
+                    }
+        if (ok) picks.push_back (found);
+    }
+    return picks;
+}
 } // namespace
 
 NL_MEASURE (eq, "EQ: static band accuracy against the analog prototype (all types, fc, gain, Q, fs), old vs new design, dynamic bands, display vs DSP, CPU")
@@ -545,13 +573,69 @@ NL_MEASURE (eq, "EQ: static band accuracy against the analog prototype (all type
             const double dyPct = cpuPercent (fs, dy, dy, false, src);
             const double dyGlide = cpuPercent (fs, fourBands (true, 0.0f), fourBands (true, 6.0f), true, src);
             const auto verdict = [] (double pct) { return pct <= 0.15 ? juce::String ("within 0.15 %") : juce::String ("over 0.15 %"); };
+            const auto glideVerdict = [] (double pct) { return pct <= 1.0 ? juce::String ("within 1 % (glide target)") : juce::String ("over 1 % (glide target)"); };
             rows.push_back ({ "All four bands off", tag, fmt (offPct, 4), "-" });
             rows.push_back ({ "4 static bands, steady", tag, fmt (stPct, 4), "-" });
-            rows.push_back ({ "4 static bands, gains gliding (6 dB every 1024 samples)", tag, fmt (stGlide, 4), "-" });
+            rows.push_back ({ "4 static bands, gains gliding (6 dB every 1024 samples)", tag, fmt (stGlide, 4), glideVerdict (stGlide) });
             rows.push_back ({ "4 dynamic bands, steady detection", tag, fmt (dyPct, 4), verdict (dyPct) });
-            rows.push_back ({ "4 dynamic bands, gains gliding", tag, fmt (dyGlide, 4), verdict (dyGlide) });
+            rows.push_back ({ "4 dynamic bands, gains gliding", tag, fmt (dyGlide, 4), glideVerdict (dyGlide) });
         }
         emitTable (r, { "Configuration", "fs", "CPU (% of one core)", "Budget" }, rows);
+    }
+
+    r.h3 ("4b. Worst tick: all four bands switch to refinement-needing settings in the same tick (48 kHz)");
+    {
+        const double fs = 48000.0;
+        eqd::Context ctx;
+        ctx.prepare (fs);
+        const auto picks = refinePicks (ctx);
+        if (picks.size() == 4)
+        {
+            EqParams target;
+            for (const auto& pk : picks)
+            {
+                auto& bp = target.band[pk.band];
+                bp.type = pk.type;
+                bp.freq = pk.freq;
+                bp.gain = pk.gain;
+                bp.q = pk.q;
+            }
+            EqModule m;
+            m.prepare (fs);
+            m.setParams (EqParams {});
+            const int n = (int) (fs * 2.5);
+            std::vector<float> l ((size_t) n, 0.0f), rr ((size_t) n, 0.0f);
+            int maxPerTick = 0, total = 0;
+            double maxTickUs = 0.0, sumTickUs = 0.0;
+            int ticks = 0;
+            for (int i = 0; i < n; i += 32)
+            {
+                if (i == 4096) m.setParams (target);
+                float* io[2] { l.data() + i, rr.data() + i };
+                const auto t0 = Clock::now();
+                m.process (io, 2, 32, nullptr);
+                const double us = microsSince (t0);
+                maxTickUs = std::max (maxTickUs, us);
+                sumTickUs += us;
+                ++ticks;
+                const int c = m.refinementsThisTick();
+                maxPerTick = std::max (maxPerTick, c);
+                total += c;
+            }
+            r.table ({ "Quantity", "Value" });
+            r.row ({ "Refinement designs per tick, maximum", juce::String (maxPerTick) + " (budget 1)" });
+            r.row ({ "Refinement designs in 2.5 s", juce::String (total) });
+            r.row ({ "Processing time per tick, maximum (us)", fmt (maxTickUs, 1) });
+            r.row ({ "Processing time per tick, mean (us)", fmt (sumTickUs / std::max (1, ticks), 2) });
+            r.row ({ "Tick budget at 48 kHz (32 samples, us)", fmt (32.0 / fs * 1.0e6, 1) });
+            r.endTable();
+            r.para ("Time is the wall clock of one 32-sample process call including the design work of that tick. The maximum "
+                    "includes the first tick's start-up and the timer resolution.");
+        }
+        else
+        {
+            r.para ("No refinement-needing setting found for every band.");
+        }
     }
 
     r.para ("Thresholds for the same numbers are asserted in tools/tests/TestEq.cpp. Method, the gain law, the speeds and the "

@@ -76,10 +76,21 @@ public:
     // SVF coefficients of one band at a total gain. Pure function of its arguments.
     static SvfCoefs designCoefs (const eqd::Context& ctx, int band, int type, float freq, float totalGainDb, float q, float amount) noexcept
     {
+        bool refined = false, wants = false;
+        return designCoefsBudget (ctx, band, type, freq, totalGainDb, q, amount, true, refined, wants);
+    }
+
+    // The same, with the refinement under the per-tick budget: with allowRefine false a design that
+    // needs the refinement returns the closed form and sets wantsRefine. `refined` reports a refinement.
+    static SvfCoefs designCoefsBudget (const eqd::Context& ctx, int band, int type, float freq, float totalGainDb, float q, float amount,
+                                       bool allowRefine, bool& refined, bool& wantsRefine) noexcept
+    {
         const auto bk = kindOf (band, type, q);
         const float g = std::clamp (totalGainDb, -kMaxTotalGainDb, kMaxTotalGainDb);
         const eqd::Shape s { bk.kind, (double) freq, (double) g, effectiveQ (bk, g, amount) };
-        return eqd::toCoefs (eqd::designBand (ctx, s).p);
+        const auto r = eqd::designBandBudgeted (ctx, s, allowRefine, wantsRefine);
+        refined = r.refined;
+        return eqd::toCoefs (r.p);
     }
 
     // Previous bilinear design, kept only so older callers compile. Not used by the DSP.
@@ -150,6 +161,9 @@ public:
     int latency() const noexcept { return 0; }
     // Current dynamic gain of one band in dB (0 when the band is static), for the display.
     float getDynGainDb (int band) const noexcept { return bands[band].dynDb; }
+    // Test hook: refinement designs run in the control tick that was processed last (at most
+    // kMaxRefinesPerTick, across all bands and table nodes).
+    int refinementsThisTick() const noexcept { return refinesThisTick; }
 
     void prepare (double sampleRate, int /*maxBlock*/ = 4096)
     {
@@ -179,6 +193,7 @@ public:
             b.det.reset();
             b.freq.snap(); b.gain.snap(); b.q.snap();
             b.freqValid = false;
+            b.rebuildNext = 0;
             b.dirty = b.tableDirty = true;
             b.configured = false;
             b.active = false;
@@ -201,6 +216,8 @@ public:
         soloTarget = pSolo;
         soloActive = false;
         clock.reset();
+        refinesThisTick = 0;
+        tickCount = 0;
     }
 
     // Stores targets only; nothing advances here. Everything is consumed at control ticks.
@@ -242,6 +259,10 @@ public:
 
 private:
     static constexpr int kNodes = 21; // dynamic gain-axis table: 1 dB steps over up to 18 dB
+    // Refinement designs (the expensive path, up to ~0.4 ms) per control tick, across all bands.
+    static constexpr int kMaxRefinesPerTick = 1;
+    int refinesThisTick = 0;
+    uint32_t tickCount = 0; // control ticks since reset (unsigned, wraps; only the low bits are used)
 
     struct BandState
     {
@@ -271,6 +292,7 @@ private:
         float dynDb = 0.0f, attackCoef = 0.0f, releaseCoef = 0.0f;
         bool dynMode = false;
         int nodes = 1;
+        int rebuildNext = 0; // next table node to design (0 also means: start of a rebuild)
         float nodeDb[kNodes] {};
         SvfCoefs table[kNodes];
     };
@@ -287,8 +309,14 @@ private:
     {
         const bool charMoved = charAmt.tick();
         soloTarget = pSolo;
-        for (int i = 0; i < 4; ++i) updateBand (i, numCh, charMoved);
+        refinesThisTick = 0;
+        // Bands are visited in a fixed order within a tick. The first band rotates with the absolute
+        // tick, so none is starved of the one refinement a tick allows. A function of the tick index
+        // only, so the output does not depend on the host block size.
+        const int first = (int) (tickCount & 3u);
+        for (int k = 0; k < 4; ++k) updateBand ((first + k) & 3, numCh, charMoved);
         updateSolo();
+        ++tickCount;
     }
 
     void updateBand (int i, int numCh, bool charMoved)
@@ -331,6 +359,7 @@ private:
         {
             b.range = b.pRange;
             b.tableDirty = true;
+            b.rebuildNext = 0;
             b.dynDb = b.range < 0.0f ? std::clamp (b.dynDb, b.range, 0.0f) : std::clamp (b.dynDb, 0.0f, b.range);
         }
         if (b.speed != b.pSpeed)
@@ -390,14 +419,32 @@ private:
 
         if (b.dynMode)
         {
-            if (b.moved || b.dirty || b.tableDirty) rebuildTable (i, b, freq, q);
-            b.c = tableCoefs (b);
+            if (b.dirty) { b.tableDirty = true; b.dirty = false; }
+            // Static parameters gliding: the table is held (not rebuilt) and the band is designed
+            // directly at its current total gain, once per tick.
+            if (b.moved) { b.tableDirty = true; b.rebuildNext = 0; }
+            if (b.tableDirty)
+            {
+                bool refined = false, wants = false;
+                b.c = designCoefsBudget (ctx, i, b.type, freq, b.gain.current + b.dynDb, q, charAmt.current,
+                                         refinesThisTick < kMaxRefinesPerTick, refined, wants);
+                if (refined) ++refinesThisTick;
+                // Once the parameters have settled, the table is rebuilt, one node per tick.
+                if (! b.moved) rebuildNode (i, b, freq, q);
+            }
+            else
+            {
+                b.c = tableCoefs (b);
+            }
         }
         else if (b.moved || b.dirty)
         {
-            b.c = designCoefs (ctx, i, b.type, freq, b.gain.current, q, charAmt.current);
+            bool refined = false, wants = false;
+            b.c = designCoefsBudget (ctx, i, b.type, freq, b.gain.current, q, charAmt.current,
+                                     refinesThisTick < kMaxRefinesPerTick, refined, wants);
+            if (refined) ++refinesThisTick;
+            b.dirty = wants; // a design that wanted the refinement is retried on a later tick
         }
-        b.dirty = b.tableDirty = false;
     }
 
     void endFade (BandState& b, int numCh)
@@ -409,12 +456,13 @@ private:
             if (! covers (b.target, c, numCh)) b.st[c].reset();
     }
 
-    // Nodes at dynamic gains 0, 1, 2 ... |range| dB (the last one at |range|), each a full design
-    // at static gain + dynamic gain. Node 0 is the static design itself, so a dynamic band at rest
-    // is bit-identical to the same band without dynamics.
-    void rebuildTable (int band, BandState& b, float freq, float q)
+    // Gain-axis nodes at dynamic gains 0, 1, 2 ... |range| dB (the last one at |range|). Node 0 is
+    // the static design itself, so a dynamic band at rest is bit-identical to the same band without
+    // dynamics. The nodes are designed one per control tick, after the parameters have settled
+    // (rebuildNode); until the table is complete the band is designed directly (see updateBand).
+    void setNodes (BandState& b) noexcept
     {
-        const float sgn = b.range < 0.0f ? -1.0f : 1.0f, aR = std::abs (b.range);
+        const float aR = std::abs (b.range);
         int n = 1;
         b.nodeDb[0] = 0.0f;
         if (aR >= 0.01f)
@@ -424,8 +472,22 @@ private:
             if (aR - (float) whole > 0.01f) b.nodeDb[n++] = aR;
         }
         b.nodes = n;
-        for (int j = 0; j < n; ++j)
-            b.table[j] = designCoefs (ctx, band, b.type, freq, b.gain.current + sgn * b.nodeDb[j], q, charAmt.current);
+    }
+
+    void rebuildNode (int band, BandState& b, float freq, float q)
+    {
+        if (b.rebuildNext == 0) setNodes (b);
+        const float sgn = b.range < 0.0f ? -1.0f : 1.0f;
+        bool refined = false, wants = false;
+        b.table[b.rebuildNext] = designCoefsBudget (ctx, band, b.type, freq, b.gain.current + sgn * b.nodeDb[b.rebuildNext], q,
+                                                    charAmt.current, refinesThisTick < kMaxRefinesPerTick, refined, wants);
+        if (refined) ++refinesThisTick;
+        // A node that wanted the refinement stays the next one to design.
+        if (! wants && ++b.rebuildNext >= b.nodes)
+        {
+            b.rebuildNext = 0;
+            b.tableDirty = false;
+        }
     }
 
     static SvfCoefs tableCoefs (const BandState& b) noexcept

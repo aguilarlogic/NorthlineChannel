@@ -27,7 +27,9 @@ a2 = g·a1, a3 = g·a2, mixing m0, m1, m2).
 
 The design is a pure function of (band, type, frequency, total gain, Q, character, sample rate); it holds no state
 and does not allocate. Refinement runs only when static parameters move (a control tick on which a smoothed
-parameter changed), never when nothing moved.
+parameter changed), never when nothing moved. At most one refinement runs per control tick across all bands and
+table nodes (`kMaxRefinesPerTick`). A design that wants one more gets the closed form for that tick and retries on
+the following ticks.
 
 **Accuracy** (`measure eq`, full run: every 1 dB from -18 to +18, 25 centre frequencies 20 Hz to 20 kHz, Q 0.2 to 10,
 probes from 20 Hz to 0.9 Nyquist, 2.5 million bell cases per rate):
@@ -97,7 +99,10 @@ the knee, which takes about 10 ms for a 2 ms follower.
 **Gain axis table.** Static gain plus dynamic gain is designed at 1 dB steps of dynamic gain (up to |Range|, with a
 last node at |Range|), 19 nodes at most. The band's g, k and m values are interpolated linearly between nodes at
 control rate. Node 0 is the static design itself, so a dynamic band at rest is bit-identical to the same band
-without dynamics. The table is rebuilt only when the static parameters or the range change.
+without dynamics. While the static parameters glide the table is held and the band is designed directly at its
+current total gain (one design per tick). Once the parameters have settled, the table is rebuilt one node per tick
+(at most 19 ticks), and the band goes back to table interpolation when the rebuild is complete. A range change
+restarts the rebuild.
 
 **At rest.** Below threshold (dynamic gain 0) and with static gain 0, the band is inactive: no processing, so it
 nulls exactly (-300 dB measured). Below threshold with a non-zero static gain it is bit-identical to the static band.
@@ -137,8 +142,15 @@ region filter settle on the running signal before the fade. Splatter on/off: -66
   solo (max difference 0.0, tests `eq_blockSizeIndependentWithAutomation` and `eq_stripBlockSizeIndependentWithAutomation`).
 - **Latency**: 0 samples, independent of any setting.
 - **Allocation**: none in `process()` (test `eq_noAllocationOnTheAudioThread`: 0 allocations).
-- **Per-tick refinement cost**: a design that needs the refinement can take 165 to 375 us (one 32-sample tick is
-  about 670 us at 48 kHz). Several bands refining in the same tick would overrun it. Open item (section 8).
+- **Refinement budget**: at most one refinement design per control tick, across the four bands and the table nodes.
+  Bands are visited in a fixed order within a tick, starting with a band that rotates with the absolute tick index,
+  so no band is starved. Everything depends on the tick index only, so the output is the same at every block size. A
+  deferred design runs the closed form for a few ticks; with a crossfade or a glide in progress that step is attenuated
+  by the fade or the smoothing. Measured worst case (4b of `measure eq`, all four bands switching to settings that need
+  the refinement in one tick, 48 kHz): at most 1 refinement per tick, 488 refinements in 2.5 s, mean processing time
+  per 32-sample tick 3.4 us, maximum 55 to 157 us (the larger value includes start-up), against a tick budget of
+  667 us. Test `eq_refinementBudgetPerTick` checks the one-per-tick limit and that every band converges to its exact
+  design (worst 0.0000 dB).
 
 ## 7. Display (D13)
 
@@ -152,27 +164,27 @@ region filter settle on the running signal before the fade. Splatter on/off: -66
 
 ## 8. CPU (measured, `measure eq`, stereo, 10 s of noise at -20 dBFS, 64-sample blocks)
 
-| Configuration | 48 kHz (% of one core) | 96 kHz |
+| Configuration | 48 kHz (% of one core) | 96 kHz (% of one core) |
 |---|---|---|
 | All four bands off | 0.005 | 0.010 |
-| Four static bands, steady | 0.060 | 0.120 |
-| Four dynamic bands, steady detection | 0.134 (budget 0.15 %) | 0.265 |
-| Four static bands, gains gliding every 1024 samples | 0.71 | 1.41 |
-| Four dynamic bands, gains gliding | 4.9 | 9.8 |
+| Four static bands, steady | 0.061 | 0.121 |
+| Four dynamic bands, steady detection | 0.136 (budget 0.15 %) | 0.270 |
+| Four static bands, gains gliding every 1024 samples | 0.73 | 1.43 |
+| Four dynamic bands, gains gliding | 0.80 (target 1 %) | 1.60 |
 
-The four dynamic bands meet the 0.15 % budget at 48 kHz with steady parameters. Gliding is the worst case: every
-tick rebuilds the design (static) or the gain-axis table (dynamic), so the cost is per moving band, not per module.
-Costs were brought down by interleaving the two channels in the band and detector loops, keeping recursion state
-and coefficients in locals (the compiler otherwise reloads them every sample), and recomputing Hz and Q only when
-the smoothed logs change. Before this the four dynamic bands cost 0.34 %.
+The four dynamic bands meet the 0.15 % budget at 48 kHz with steady parameters, and gliding costs 0.80 % at 48 kHz
+(target about 1 %). Gliding now costs one direct design per moving band per tick, instead of a rebuild of up to 19
+table nodes per tick (4.9 % before this change). The cost scales with the control rate (fs / 32), so at 96 kHz the
+gliding case is 1.60 %, above the 1 % target; a further step would decimate the direct designs while moving (not done).
+Costs were brought down by interleaving the two channels in the band and detector loops, keeping recursion state and
+coefficients in locals (the compiler otherwise reloads them every sample), recomputing Hz and Q only when the smoothed
+logs change, and holding the table during glides. Before these the four dynamic bands cost 0.34 % steady.
 
 ## 9. Open items
 
-1. **Per-tick refinement budget.** A refining design can take up to about 375 us. Four bands gliding through hard
-   regions in one tick could overrun a 64-sample block. Proposed fix: at most one refinement per control tick across
-   bands (absolute tick order, so still deterministic), the others use the closed form and retry on the next tick.
-2. **Glide cost of dynamic bands** (4.9 % for four gliding bands): the gain-axis table is rebuilt every tick while the
-   band moves. Options: fewer nodes, or rebuilding every other tick while moving.
-3. **Detector bias on pure tones** (section 3, 0.12 dB).
+1. **Per-tick refinement budget**: done (section 6). One refinement per tick.
+2. **Glide cost of dynamic bands**: done at 48 kHz (0.80 %, section 8). At 96 kHz it is 1.60 %; decimating the direct
+   designs while moving would halve it.
+3. **Detector bias on pure tones** (section 3, 0.12 dB): documented, not fixed.
 4. **Proportional shelves** are not in the grid; they use the same design at Q up to 1.9, inside the grid's range.
 5. Linear-phase mode (P6) is not part of this work.
