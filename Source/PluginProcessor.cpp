@@ -534,6 +534,31 @@ std::vector<int> NorthlineProcessor::getFocus() const
     return focus;
 }
 
+void NorthlineProcessor::setFocus (std::vector<int> paramIndices)
+{
+    {
+        const juce::ScopedLock sl (stateLock);
+        focus = std::move (paramIndices);
+    }
+    ++stateGeneration;
+}
+
+bool NorthlineProcessor::isInSpotlight (int paramIndex) const
+{
+    const juce::ScopedLock sl (stateLock);
+    return std::find (focus.begin(), focus.end(), paramIndex) != focus.end();
+}
+
+void NorthlineProcessor::toggleSpotlight (int paramIndex)
+{
+    {
+        const juce::ScopedLock sl (stateLock);
+        if (auto it = std::find (focus.begin(), focus.end(), paramIndex); it != focus.end()) focus.erase (it);
+        else focus.push_back (paramIndex);
+    }
+    ++stateGeneration;
+}
+
 float NorthlineProcessor::getUiScale() const
 {
     const juce::ScopedLock sl (stateLock);

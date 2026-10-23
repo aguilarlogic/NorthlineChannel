@@ -80,6 +80,11 @@ public:
     // UI accessors: thread-safe, they return copies.
     juce::String getPresetName() const;
     std::vector<int> getFocus() const;
+
+    // Spotlight (the parameters a preset highlights). Saved with presets and the session.
+    void setFocus (std::vector<int> paramIndices);
+    bool isInSpotlight (int paramIndex) const;
+    void toggleSpotlight (int paramIndex);
     float getUiScale() const;
     void setUiScale (float s);
 
