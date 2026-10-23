@@ -224,16 +224,18 @@ private:
     struct Reference { double offsetDb, sigmaDb; };
 
     // How the detector reads pink noise at the Operating Level (mean offset and spread in dB).
-    // Measured with the `dynamics` suite at the default timing.
+    // Fitted at the default timing (10 ms attack, 150 ms release) so that the integrated loudness
+    // of the auto make-up stays within 0.3 LU over ratio 1.5-10 and threshold -40..-10 dB.
+    // The peak detectors read about 9 dB over the RMS level of pink noise; the RMS detectors about 5 dB.
     static Reference referenceFor (int type) noexcept
     {
         switch (type)
         {
-            case FET: return { 5.0, 2.5 };
-            case OPT: return { 2.0, 2.5 };
-            case SOFT: return { 2.0, 2.5 };
+            case OPT: return { 5.25, 4.0 };
+            case SOFT: return { 5.0, 2.5 };
+            case FET:
             case VCA:
-            default: return { 5.0, 2.5 };
+            default: return { 9.0, 2.0 };
         }
     }
 
@@ -257,7 +259,7 @@ private:
     {
         SvfState hp, lp, bell;
         dyn::PeakDetector peak;
-        float ms = 0.0f, y = 0.0f; // RMS power, smoothed gain in dB (<= 0)
+        float ms1 = 0.0f, ms = 0.0f, y = 0.0f; // RMS window: first and second pole (power), smoothed gain in dB (<= 0)
         float gc = 0.0f;           // last gain-computer target in dB (<= 0)
         float colourD2 = 0.0f;
         Colour colour;
@@ -308,12 +310,14 @@ private:
         }
         else
         {
-            // RMS window: about a quarter of the shortest time that has to come through it.
+            // RMS window: two cascaded one-poles. A single pole leaves a 7 % ripple at twice the
+            // signal frequency (1 kHz sine, 1.1 ms window); the asymmetric attack/release smoother
+            // turns it into a ~0.2 dB deeper gain reduction. The second pole brings the ripple down
+            // by a factor of 15 at the same total lag.
             const float fastest = std::min (A, c.type == OPT ? 0.25f * R : R);
-            // The window's lag shows up in the gain-reduction step response as a one-pole of the
-            // same time constant (10-90% rise = ln 9 tau); the attack smoother makes up the rest.
-            const float tau = std::clamp (0.114f * fastest, 0.3f, 30.0f);
-            const float rise = 2.197f * tau;
+            // 10-90% rise of two cascaded poles is 3.35 tau; the attack smoother makes up the rest.
+            const float tau = std::clamp (0.0748f * fastest, 0.2f, 20.0f);
+            const float rise = 3.35f * tau;
             const float aEff = std::sqrt (std::max (A * A - rise * rise, 0.09f * rise * rise));
             c.rmsCoef = timeCoef (tau, fs);
             c.attackCoef = dyn::riseCoef (aEff, fs);
@@ -378,7 +382,7 @@ private:
         const bool toRms = pending.type >= OPT, fromRms = shadow.cfg.type >= OPT;
         for (auto& s : main.st.ch)
         {
-            if (toRms && ! fromRms) s.ms = 0.5f * s.peak.env * s.peak.env;
+            if (toRms && ! fromRms) s.ms = s.ms1 = 0.5f * s.peak.env * s.peak.env;
             if (! toRms && fromRms) { s.peak.env = std::sqrt (2.0f * s.ms); s.peak.hold = 0; }
         }
         fade.start (fadeLen);
@@ -444,7 +448,9 @@ private:
                 }
                 else
                 {
-                    s.ms = k * k + 1.0e-30f + (s.ms - k * k) * cfg.rmsCoef;
+                    const float x = k * k;
+                    s.ms1 = x + 1.0e-30f + (s.ms1 - x) * cfg.rmsCoef;
+                    s.ms = s.ms1 + 1.0e-30f + (s.ms - s.ms1) * cfg.rmsCoef;
                     lvl[c] = 0.5f * fastGainToDb (s.ms) + 3.0103f; // sine peak convention
                 }
             }
