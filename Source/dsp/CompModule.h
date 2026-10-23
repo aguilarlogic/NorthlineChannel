@@ -62,6 +62,13 @@ public:
     static float autoMakeupDb (const CompParams& p) noexcept
     {
         const Reference ref = referenceFor (p.type);
+        return autoMakeupDb (p, ref.offsetDb, ref.sigmaDb);
+    }
+
+    // Same with an explicit detector reading of the reference signal (used to calibrate the table).
+    static float autoMakeupDb (const CompParams& p, double offsetDb, double sigmaDb) noexcept
+    {
+        const Reference ref { offsetDb, sigmaDb };
         const double mu = (double) p.opLevelDb + ref.offsetDb;
         double sum = 0.0, wsum = 0.0;
         for (int k = -12; k <= 12; ++k)
@@ -251,6 +258,7 @@ private:
         SvfState hp, lp, bell;
         dyn::PeakDetector peak;
         float ms = 0.0f, y = 0.0f; // RMS power, smoothed gain in dB (<= 0)
+        float gc = 0.0f;           // last gain-computer target in dB (<= 0)
         float colourD2 = 0.0f;
         Colour colour;
     };
@@ -302,8 +310,10 @@ private:
         {
             // RMS window: about a quarter of the shortest time that has to come through it.
             const float fastest = std::min (A, c.type == OPT ? 0.25f * R : R);
-            const float tau = std::clamp (0.173f * fastest, 0.5f, 30.0f);
-            const float rise = 1.446f * tau;
+            // The window's lag shows up in the gain-reduction step response as a one-pole of the
+            // same time constant (10-90% rise = ln 9 tau); the attack smoother makes up the rest.
+            const float tau = std::clamp (0.114f * fastest, 0.3f, 30.0f);
+            const float rise = 2.197f * tau;
             const float aEff = std::sqrt (std::max (A * A - rise * rise, 0.09f * rise * rise));
             c.rmsCoef = timeCoef (tau, fs);
             c.attackCoef = dyn::riseCoef (aEff, fs);
@@ -379,8 +389,10 @@ private:
     {
         auto& st = core.st;
         const auto& cfg = core.cfg;
-        const float yMin = std::min (st.ch[0].y, st.ch[1].y);
-        st.mem.update (std::min (1.0f, -yMin * (cfg.type == OPT ? 0.1f : 0.1667f)), cfg.memCharge, cfg.memDischarge);
+        // The memory follows how long the signal has been asking for gain reduction (the target),
+        // not the recovering gain, so a short burst does not push it up while it is releasing.
+        const float gcMin = std::min (st.ch[0].gc, st.ch[1].gc);
+        st.mem.update (std::min (1.0f, -gcMin * (cfg.type == OPT ? 0.1f : 0.1667f)), cfg.memCharge, cfg.memDischarge);
         if (cfg.type == OPT)
             st.relCoef = dyn::riseCoef (cfg.relMs * (1.0f + 2.0f * st.mem.value), fs);
         else if (cfg.autoRel)
@@ -444,6 +456,7 @@ private:
                 ChanState& s = st.ch[c];
                 const float lk = linkOn ? lvl[c] + lv.link * (mx - lvl[c]) : lvl[c];
                 const float gc = std::max (dyn::compressorGainDb (lk, lv.thresh, lv.invRatio, lv.knee), -lv.rangeDb);
+                s.gc = gc;
                 float y = s.y;
                 if constexpr (T == OPT)
                 {
