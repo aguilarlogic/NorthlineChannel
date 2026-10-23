@@ -178,6 +178,7 @@ public:
             b.sh[1].reset();
             b.det.reset();
             b.freq.snap(); b.gain.snap(); b.q.snap();
+            b.freqValid = false;
             b.dirty = b.tableDirty = true;
             b.configured = false;
             b.active = false;
@@ -265,6 +266,8 @@ private:
         SvfState sh[2];
         // Dynamics.
         eqd::BandDetector det;
+        float lnF = 0.0f, lnQ = 0.0f, freqHz = 1000.0f, qVal = 1.0f;
+        bool freqValid = false;
         float dynDb = 0.0f, attackCoef = 0.0f, releaseCoef = 0.0f;
         bool dynMode = false;
         int nodes = 1;
@@ -340,7 +343,16 @@ private:
         if (! b.dyn && wasDyn) b.det.reset();
         if (b.dyn) b.det.sanitize();
 
-        const float freq = std::exp (b.freq.current), q = std::exp (b.q.current);
+        // Hz and Q from the smoothed logs, recomputed only when those change (not every tick).
+        if (! b.freqValid || b.freq.current != b.lnF || b.q.current != b.lnQ)
+        {
+            b.lnF = b.freq.current;
+            b.lnQ = b.q.current;
+            b.freqHz = std::exp (b.lnF);
+            b.qVal = std::exp (b.lnQ);
+            b.freqValid = true;
+        }
+        const float freq = b.freqHz, q = b.qVal;
 
         // Dynamic gain from the detector state (levels through the previous segment).
         if (b.dyn || b.dynMode)
@@ -468,21 +480,25 @@ private:
         bool anyDyn = false;
         for (auto& b : bands) anyDyn |= b.dyn;
 
+        // The band solo needs the module input after the bands have run: keep a copy for it.
         float in[2][kControlBlock];
-        if (anyDyn || soloActive)
+        if (soloActive)
             for (int c = 0; c < numCh; ++c) std::copy (ch[c] + off, ch[c] + off + len, in[c]);
 
-        // Detectors see the module input (or the external key), not the band-processed signal.
+        // Detectors run before any band changes the signal, so they read the module input (or the
+        // external key) in place, not the band-processed signal.
         if (anyDyn)
             for (auto& b : bands)
             {
                 if (! b.dyn) continue;
-                for (int c = 0; c < numCh; ++c)
-                {
-                    if (! covers (b.target, c, numCh)) continue;
-                    const float* src = (b.ext && key != nullptr && key[c] != nullptr) ? key[c] + off : in[c];
-                    b.det.run (c, src, len);
-                }
+                const float* src[2] { ch[0] + off, ch[numCh > 1 ? 1 : 0] + off };
+                if (b.ext && key != nullptr)
+                    for (int c = 0; c < numCh; ++c)
+                        if (key[c] != nullptr) src[c] = key[c] + off;
+                if (numCh == 2 && b.target == 0) b.det.run2 (src[0], src[1], len);
+                else
+                    for (int c = 0; c < numCh; ++c)
+                        if (covers (b.target, c, numCh)) b.det.run (c, src[c], len);
             }
 
         for (auto& b : bands)
@@ -490,13 +506,33 @@ private:
             if (! b.active) continue;
             if (! b.fading)
             {
-                for (int c = 0; c < numCh; ++c)
+                if (numCh == 2 && b.target == 0)
                 {
-                    if (! covers (b.target, c, numCh)) continue;
-                    float* x = ch[c] + off;
-                    auto& s = b.st[c];
-                    const auto& co = b.c;
-                    for (int k = 0; k < len; ++k) x[k] = s.process (x[k], co);
+                    // Both channels in one loop (independent recursions, see EqDynamics.h run2).
+                    // Locals for the state and coefficients (see EqDynamics.h run): kept in registers.
+                    float* x0 = ch[0] + off;
+                    float* x1 = ch[1] + off;
+                    const SvfCoefs co = b.c;
+                    SvfState s0 = b.st[0], s1 = b.st[1];
+                    for (int k = 0; k < len; ++k)
+                    {
+                        x0[k] = s0.process (x0[k], co);
+                        x1[k] = s1.process (x1[k], co);
+                    }
+                    b.st[0] = s0;
+                    b.st[1] = s1;
+                }
+                else
+                {
+                    for (int c = 0; c < numCh; ++c)
+                    {
+                        if (! covers (b.target, c, numCh)) continue;
+                        float* x = ch[c] + off;
+                        const SvfCoefs co = b.c;
+                        SvfState s = b.st[c];
+                        for (int k = 0; k < len; ++k) x[k] = s.process (x[k], co);
+                        b.st[c] = s;
+                    }
                 }
             }
             else

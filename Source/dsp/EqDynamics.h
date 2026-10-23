@@ -80,14 +80,39 @@ struct BandDetector
 
     inline void run (int ch, const float* x, int len) noexcept
     {
+        // Locals, not members: the stores into x could alias the members, which would force a reload
+        // and store of the recursion state on every sample.
+        const SvfCoefs cc = c;
+        const float cf = coef;
+        SvfState s = st[ch];
         float m = ms[ch];
-        auto& s = st[ch];
         for (int i = 0; i < len; ++i)
         {
-            const float y = s.process (x[i], c);
-            m += coef * (y * y - m);
+            const float y = s.process (x[i], cc);
+            m += cf * (y * y - m);
         }
+        st[ch] = s;
         ms[ch] = m;
+    }
+
+    // Both channels in one loop: the two recursions are independent, so interleaving them roughly
+    // doubles the throughput of this latency-bound code. Same arithmetic as run() per channel.
+    inline void run2 (const float* x0, const float* x1, int len) noexcept
+    {
+        const SvfCoefs cc = c;
+        const float cf = coef;
+        SvfState s0 = st[0], s1 = st[1];
+        float m0 = ms[0], m1 = ms[1];
+        for (int i = 0; i < len; ++i)
+        {
+            const float y0 = s0.process (x0[i], cc), y1 = s1.process (x1[i], cc);
+            m0 += cf * (y0 * y0 - m0);
+            m1 += cf * (y1 * y1 - m1);
+        }
+        st[0] = s0;
+        st[1] = s1;
+        ms[0] = m0;
+        ms[1] = m1;
     }
 
     // Called at control ticks: flushes denormals and drops NaN / Inf. Not done inside run() so

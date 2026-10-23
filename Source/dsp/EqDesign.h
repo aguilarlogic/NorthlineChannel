@@ -116,7 +116,7 @@ struct Analog
 // Frequency grid shared by all designs at one sample rate.
 struct Context
 {
-    static constexpr int kLow = 12, kHigh = 22, kAbs = kLow + kHigh, kExtra = 3, kRel = 9, kMax = kAbs + kExtra + kRel;
+    static constexpr int kLow = 12, kHigh = 22, kAbs = kLow + kHigh, kExtra = 3, kRel = 13, kMax = kAbs + kExtra + kRel;
 
     double fs = 48000.0;
     double absFreq[kAbs + kExtra] {}, absT[kAbs + kExtra] {}; // t = tan^2(w/2)
@@ -413,7 +413,8 @@ inline void buildFit (const Context& ctx, const Analog& an, detail::Fit& fit) no
         ++n;
     }
     const double relFactor[Context::kRel] { 1.0, std::pow (rr, 0.25), std::pow (rr, -0.25), std::pow (rr, 0.5), std::pow (rr, -0.5),
-                                            rr, 1.0 / rr, rr * rr, 1.0 / (rr * rr) };
+                                            std::pow (rr, 0.75), std::pow (rr, -0.75), rr, 1.0 / rr, std::pow (rr, 1.5), std::pow (rr, -1.5),
+                                            rr * rr, 1.0 / (rr * rr) };
     for (int i = 0; i < Context::kRel; ++i)
     {
         const double f = std::clamp (an.fc * relFactor[i], 20.0, 0.9 * nyq);

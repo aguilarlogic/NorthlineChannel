@@ -1,5 +1,6 @@
 ﻿#include "TestUtil.h"
 #include "dsp/EqModule.h"
+#include "../EqHelpers.h"
 #include <complex>
 
 // EQ acceptance tests: decramped design (roadmap 7.3), eq_char, dynamic bands, band solo,
@@ -7,76 +8,10 @@
 
 using namespace nl;
 
+using namespace eqtest;
+
 namespace
 {
-using Cplx = std::complex<double>;
-
-//==============================================================================
-// Independent analog prototypes (RBJ bell and shelves), complex arithmetic.
-Cplx analogH (eqd::Kind kind, double gainDb, double q, double fc, double f)
-{
-    const double A = std::pow (10.0, gainDb / 40.0), r = std::sqrt (A);
-    const Cplx s (0.0, f / fc);
-    switch (kind)
-    {
-        case eqd::Kind::Bell:     return (s * s + s * (A / q) + 1.0) / (s * s + s / (A * q) + 1.0);
-        case eqd::Kind::LowShelf: return A * (s * s + s * (r / q) + A) / (A * s * s + s * (r / q) + 1.0);
-        default:                  return A * (A * s * s + s * (r / q) + 1.0) / (s * s + s * (r / q) + A);
-    }
-}
-
-double analogDb (eqd::Kind kind, double gainDb, double q, double fc, double f) { return 20.0 * std::log10 (std::abs (analogH (kind, gainDb, q, fc, f))); }
-
-//==============================================================================
-EqParams defaultEq() { return readEqParams (ParamSnapshot::defaults()); }
-
-struct Event
-{
-    int sample;
-    EqParams p;
-};
-
-std::vector<float> sineVec (double fs, double f, float amp, int n)
-{
-    std::vector<float> v ((size_t) n);
-    for (int i = 0; i < n; ++i) v[(size_t) i] = amp * (float) std::sin (2.0 * kPiD * f * i / fs);
-    return v;
-}
-
-std::vector<float> noiseVec (int n, float amp, int seed)
-{
-    juce::Random rng (seed);
-    std::vector<float> v ((size_t) n);
-    for (auto& x : v) x = amp * (rng.nextFloat() * 2.0f - 1.0f);
-    return v;
-}
-
-// Runs the module over l / r in place in host blocks of `block`. Events are sample-accurate: the
-// host block is split at the event position, like a VST3 host delivering parameter changes with a
-// sample offset. (Changes applied only at block starts cannot be block-size independent for any
-// module: a block of 37 or 511 samples would see them up to 36 or 510 samples early.)
-void runEq (EqModule& m, std::vector<float>& l, std::vector<float>& r, int block, const std::vector<Event>& ev = {},
-            const std::vector<float>* keyL = nullptr, const std::vector<float>* keyR = nullptr)
-{
-    const int n = (int) l.size();
-    size_t next = 0;
-    for (int pos = 0; pos < n; pos += block)
-    {
-        const int end = std::min(pos + block, n);
-        int cur = pos;
-        while (cur < end)
-        {
-            while (next < ev.size() && ev[next].sample <= cur) m.setParams (ev[next++].p);
-            const int stop = next < ev.size() ? std::min (end, ev[next].sample) : end;
-            const int len = stop - cur;
-            float* io[2] { l.data() + cur, r.data() + cur };
-            const float* k[2] { keyL != nullptr ? keyL->data() + cur : nullptr, keyR != nullptr ? keyR->data() + cur : nullptr };
-            m.process (io, 2, len, keyL != nullptr ? k : nullptr);
-            cur = stop;
-        }
-    }
-}
-
 // Same for the whole processor (sample-accurate parameter events).
 juce::AudioBuffer<float> renderSampleAccurate (NorthlineProcessor& p, const juce::AudioBuffer<float>& in, int block,
                                                const std::vector<tool::AutomationEvent>& events, const juce::AudioBuffer<float>& sc)
@@ -108,105 +43,7 @@ juce::AudioBuffer<float> renderSampleAccurate (NorthlineProcessor& p, const juce
     }
     return out;
 }
-double rmsOf (const std::vector<float>& x, int from, int to)
-{
-    double s = 0.0;
-    for (int i = from; i < to; ++i) s += (double) x[(size_t) i] * x[(size_t) i];
-    return std::sqrt (s / std::max (1, to - from));
 }
-
-// Steady-state gain in dB of the module at one frequency on one channel.
-double measuredGainDb (double fs, const EqParams& p, double f, int channel = 0, float ampDb = -20.0f)
-{
-    EqModule m;
-    m.prepare (fs);
-    m.setParams (p);
-    const int n = (int) (fs * (f < 200.0 ? 1.2 : 0.6));
-    const float amp = juce::Decibels::decibelsToGain (ampDb);
-    auto l = sineVec (fs, f, amp, n), r = l;
-    runEq (m, l, r, 256);
-    const auto& y = channel == 0 ? l : r;
-    return 20.0 * std::log10 (rmsOf (y, n / 2, n) / (amp / std::sqrt (2.0)));
-}
-
-//==============================================================================
-void fft (std::vector<Cplx>& a)
-{
-    const size_t n = a.size();
-    for (size_t i = 1, j = 0; i < n; ++i)
-    {
-        size_t bit = n >> 1;
-        for (; j & bit; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) std::swap (a[i], a[j]);
-    }
-    for (size_t len = 2; len <= n; len <<= 1)
-    {
-        const Cplx wl = std::polar (1.0, -2.0 * kPiD / (double) len);
-        for (size_t i = 0; i < n; i += len)
-        {
-            Cplx w (1.0, 0.0);
-            for (size_t k = 0; k < len / 2; ++k)
-            {
-                const Cplx u = a[i + k], v = a[i + k + len / 2] * w;
-                a[i + k] = u + v;
-                a[i + k + len / 2] = u - v;
-                w *= wl;
-            }
-        }
-    }
-}
-
-// Splatter: spectral power of a 50 ms Hann window above 4 * f0 relative to the power below it (dB).
-// (The window resolves only 20 Hz, so the low side is not usable as a measure for low tones.)
-// A smooth gain or filter change leaves it far below -60 dB; a hard switch does not.
-double splatterDb (const std::vector<float>& x, int start, double fs, double f0)
-{
-    const int len = (int) (0.05 * fs), nfft = 8192;
-    std::vector<Cplx> a ((size_t) nfft, Cplx (0.0, 0.0));
-    for (int i = 0; i < len && start + i < (int) x.size(); ++i)
-        a[(size_t) i] = (double) x[(size_t) (start + i)] * (0.5 - 0.5 * std::cos (2.0 * kPiD * i / (len - 1)));
-    fft (a);
-    double inside = 0.0, outside = 0.0;
-    for (int k = 1; k < nfft / 2; ++k)
-    {
-        const double f = (double) k * fs / nfft, e = std::norm (a[(size_t) k]);
-        (f <= f0 * 4.0 ? inside : outside) += e;
-    }
-    return 10.0 * std::log10 ((outside + 1.0e-30) / (inside + 1.0e-30));
-}
-
-double maxStep (const std::vector<float>& x, int from, int to)
-{
-    double m = 0.0;
-    for (int i = std::max (from, 1); i < to; ++i) m = std::max (m, (double) std::abs (x[(size_t) i] - x[(size_t) i - 1]));
-    return m;
-}
-
-//==============================================================================
-// level 0: continuous parameters only; 1: + band types, targets, character; 2: + dynamic bands;
-// 3: + external key and band solo.
-EqParams randomEq (juce::Random& rng, int level)
-{
-    EqParams p;
-    p.character = level >= 1 ? rng.nextInt (2) : 0;
-    p.solo = level >= 3 && rng.nextFloat() < 0.4f ? rng.nextInt (5) : 0;
-    for (auto& b : p.band)
-    {
-        b.on = rng.nextFloat() > 0.15f;
-        b.type = level >= 1 ? rng.nextInt (3) : 2;
-        b.target = level >= 1 ? rng.nextInt (3) : 0;
-        b.freq = 20.0f * std::pow (1000.0f, rng.nextFloat());
-        b.gain = rng.nextFloat() < 0.15f ? 0.0f : rng.nextFloat() * 36.0f - 18.0f;
-        b.q = 0.2f * std::pow (50.0f, rng.nextFloat());
-        b.dyn = level >= 2 && rng.nextBool();
-        b.dynThresh = -60.0f + 60.0f * rng.nextFloat();
-        b.dynRange = rng.nextFloat() * 36.0f - 18.0f;
-        b.dynSpeed = rng.nextInt (3);
-        b.dynExt = level >= 3 && rng.nextBool();
-    }
-    return p;
-}} // namespace
 
 //==============================================================================
 // 1. Decramped design: every band type against the analog prototype up to 0.9 * Nyquist.
@@ -804,3 +641,80 @@ NL_TEST (eq_noAllocationOnTheAudioThread)
 
 
 
+
+//==============================================================================
+// Proportional (console) Q: the same accuracy as Clean, at the effective Q of each gain.
+NL_TEST (eq_designProportionalMatchesAnalog)
+{
+    for (double fs : { 44100.0, 48000.0 })
+    {
+        eqd::Context ctx;
+        ctx.prepare (fs);
+        double worstInner = 0.0, worstOuter = 0.0;
+        const double fmax = 0.9 * 0.5 * fs;
+        for (int fi = 0; fi < 25; ++fi)
+        {
+            const double fc = 20.0 * std::pow (1000.0, fi / 24.0);
+            for (double gain : { -18.0, -12.0, -6.0, -3.0, -1.0, 1.0, 3.0, 6.0, 12.0, 18.0 })
+                for (double q : { 0.2, 0.5, 1.0, 2.0, 5.0, 10.0 })
+                {
+                    const auto bk = EqModule::kindOf (EqModule::mid, 2, (float) q);
+                    const double qEff = EqModule::effectiveQ (bk, (float) gain, 1.0f);
+                    const auto c = EqModule::designCoefs (ctx, EqModule::mid, 2, (float) fc, (float) gain, (float) q, 1.0f);
+                    const double rr = std::min (8.0, std::sqrt (1.0 + 0.25 / (qEff * qEff)) + 0.5 / qEff);
+                    double& worst = fc <= 0.4 * fs ? worstInner : worstOuter;
+                    auto probe = [&] (double f)
+                    {
+                        if (f < 20.0 || f > fmax) return;
+                        worst = std::max (worst, std::abs (20.0 * std::log10 (eqd::svfMagnitude (c, f, fs)) - analogDb (bk.kind, gain, qEff, fc, f)));
+                    };
+                    for (int i = 0; i < 300; ++i) probe (20.0 * std::pow (fmax / 20.0, i / 299.0));
+                    for (int i = -60; i <= 60; ++i) probe (fc * std::pow (rr, 2.0 * i / 60.0));
+                }
+        }
+        tool::check (worstInner <= 0.5 && worstOuter <= 1.0,
+                     "Proportional bells within 0.5 dB (fc <= 0.4 fs) and 1 dB (above) of the analog prototype, " + juce::String (fs / 1000.0, 1) + " kHz",
+                     "worst " + juce::String (worstInner, 3) + " dB / " + juce::String (worstOuter, 3) + " dB");
+    }
+}
+
+// The display with the current dynamic gain (magnitudeDb with the dynamic gains) equals the DSP.
+NL_TEST (eq_displayIncludesDynamicGain)
+{
+    EqParams p;
+    for (auto& b : p.band) b.on = false;
+    auto& band = p.band[1];
+    band.on = true;
+    band.type = 2;
+    band.freq = 1000.0f;
+    band.gain = 0.0f;
+    band.q = 1.0f;
+    band.dyn = true;
+    band.dynThresh = -30.0f;
+    band.dynRange = -12.0f;
+    band.dynSpeed = 1;
+    band.dynExt = true;
+
+    double worst = 0.0, engaged = 1.0e9;
+    for (double fs : { 48000.0, 96000.0 })
+        for (double keyDb : { -27.0, -21.0, -15.0 })
+            for (double f : { 50.0, 200.0, 800.0, 1000.0, 1200.0, 2000.0, 5000.0, 10000.0, 16000.0 })
+            {
+                const int n = (int) (fs * 1.6);
+                const float amp = juce::Decibels::decibelsToGain (-20.0f);
+                auto l = sineVec (fs, f, amp, n), r = l;
+                auto kl = sineVec (fs, 1000.0, juce::Decibels::decibelsToGain ((float) keyDb), n), kr = kl;
+                EqModule m;
+                m.prepare (fs);
+                m.setParams (p);
+                runEq (m, l, r, 256, {}, &kl, &kr);
+                const double dyn = m.getDynGainDb (1);
+                const double dsp = 20.0 * std::log10 (rmsOf (l, n / 2, n) / (amp / std::sqrt (2.0)));
+                const float node[4] { 0.0f, (float) dyn, 0.0f, 0.0f };
+                worst = std::max (worst, std::abs (dsp - (double) EqModule::magnitudeDb (p, fs, f, 0, node)));
+                engaged = std::min (engaged, std::abs (dyn));
+            }
+    tool::check (engaged > 0.5, "dynamic gain engaged at every key level tested (|gain| > 0.5 dB)", "smallest " + juce::String (engaged, 2) + " dB");
+    tool::check (worst <= 0.1, "display with the dynamic gain equals the DSP (<= 0.1 dB, 48 and 96 kHz, key -27 to -15 dBFS)",
+                 "worst " + juce::String (worst, 4) + " dB");
+}
