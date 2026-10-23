@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  JUCE_TAG: "9.0.3"
+
+jobs:
+  windows:
+    name: Windows (MSVC, x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch JUCE
+        shell: bash
+        run: git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE external/JUCE
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -A x64
+
+      - name: Build VST3 and NorthlineTool
+        shell: bash
+        run: cmake --build build --config Release --parallel --target NorthlineChannel_VST3 NorthlineTool
+
+      - name: Run tests
+        shell: bash
+        run: build/NorthlineTool_artefacts/Release/NorthlineTool.exe test
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            build/NorthlineChannel_artefacts/Release/VST3/
+            build/NorthlineTool_artefacts/Release/NorthlineTool.exe
+          if-no-files-found: warn
+
+  macos:
+    # Not verified on macOS yet: a failure here must not block the pipeline.
+    name: macOS (Xcode, VST3 + AU)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch JUCE
+        shell: bash
+        run: git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE external/JUCE
+
+      - name: Configure
+        run: cmake -S . -B build -G Xcode
+
+      - name: Build VST3 and AU
+        run: cmake --build build --config Release --parallel --target NorthlineChannel_VST3 NorthlineChannel_AU
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-vst3-au
+          path: build/NorthlineChannel_artefacts/Release/
+          if-no-files-found: warn
