@@ -3,86 +3,89 @@
 #include "Limiter.h"
 #include "MeterHub.h"
 #include "ParamSnapshot.h"
-#include <vector>
 
 namespace nl
 {
-// Last stage of the strip, after output gain, level match and global mix: the limiter
-// (with click-free on/off) followed by the processor-owned meters. Real-time safe.
+// Last stage of the strip, after output gain, level match and global mix: the limiter followed by
+// the processor-owned meters. Real-time safe. Latency depends only on lim_mode and quality.
+//
+// The block is cut into segments at absolute multiples of kControlBlock (the persistent
+// ControlClock), so parameter changes, smoothing and the output do not depend on the host's
+// block size.
 class MasterSection
 {
 public:
     void prepare (double sampleRate, int maxBlock)
     {
         fs = sampleRate;
-        limiter.prepare (fs);
-        limFade.prepare (fs, 10.0f);
-        for (auto& d : dry) d.assign ((size_t) std::max (1, maxBlock), 0.0f);
+        limiter.prepare (fs, maxBlock);
         meterHub.prepare (fs, maxBlock);
+        clock.reset();
     }
 
     void reset (const ParamSnapshot& p)
     {
         setParams (p);
-        limiter.reset();
-        limFade.snap (on);
-        grDb = 0.0f;
+        limiter.resetNow();
         meterHub.reset();
+        clock.reset();
+        grDb = 0.0f;
     }
 
+    // Stores targets only; takes effect at the next control tick.
     void setParams (const ParamSnapshot& p)
     {
-        on = p.on (P::limOn);
-        mode = p.choice (P::limMode);
-        limiter.setParams (p.f (P::limCeiling), p.f (P::limRelease), mode != 0);
-        limFade.setTarget (on);
+        Limiter::Params lp;
+        lp.on = p.on (P::limOn);
+        lp.mode = std::clamp (p.choice (P::limMode), 0, 2);
+        lp.hq = p.choice (P::quality) == 1;
+        lp.ceilingDb = p.f (P::limCeiling);
+        lp.releaseMs = p.f (P::limRelease);
+        limiter.setParams (lp);
     }
 
-    // Reported latency in samples. TODO(master): must depend on lim_mode / quality only (D2).
-    int latency() const noexcept { return limiter.latencySamples (on && mode != 0); }
+    // Reported latency in samples: a function of lim_mode and quality only (never of lim_on).
+    int latency() const noexcept { return limiter.latency(); }
 
     void process (float* const* io, int numCh, int n) noexcept
     {
-        grDb = 0.0f;
-        if (on || ! limFade.isSilent())
+        numCh = std::clamp (numCh, 1, 2);
+        float minGr = 0.0f;
+        int i = 0;
+        while (i < n)
         {
-            if (mode != 0)
-            {
-                // Lookahead changes latency, so no cross-fade: the host re-aligns.
-                limFade.snap (on);
-                if (limFade.isFullyOn()) limiter.process (io, numCh, n);
-            }
-            else if (limFade.isFullyOn())
-            {
-                limiter.process (io, numCh, n);
-            }
-            else
-            {
-                for (int c = 0; c < numCh; ++c) std::copy (io[c], io[c] + n, dry[c].data());
-                limiter.process (io, numCh, n);
-                for (int i = 0; i < n; ++i)
-                {
-                    const float w = limFade.next();
-                    for (int c = 0; c < numCh; ++c) io[c][i] = dry[c][i] + (io[c][i] - dry[c][i]) * w;
-                }
-            }
-            grDb = limiter.getGainReductionDb();
+            const int phase = (int) clock.phase;
+            const int len = std::min (n - i, kControlBlock - phase);
+            if (phase == 0) limiter.controlTick();
+
+            float* seg[2] { io[0] + i, numCh > 1 ? io[1] + i : nullptr };
+            limiter.processSegment (seg, numCh, len, phase);
+
+            const float gr = limiter.segmentGainReductionDb();
+            minGr = std::min (minGr, gr);
+            meterHub.setOverThreshold (limiter.oversThreshold(), limiter.oversUseTruePeak());
+            meterHub.pushGainReduction (gr, len);
+            const float* cseg[2] { seg[0], seg[1] };
+            meterHub.accumulate (cseg, numCh, len);
+
+            clock.advance (len);
+            i += len;
         }
-        meterHub.process (io, numCh, n);
+        meterHub.publish();
+        grDb = minGr;
     }
 
+    // Lowest limiter gain (dB, <= 0) over the last block.
     float getGainReductionDb() const noexcept { return grDb; }
     MeterHub& meters() noexcept { return meterHub; }
     const MeterHub& meters() const noexcept { return meterHub; }
+    const Limiter& getLimiter() const noexcept { return limiter; }
 
 private:
     double fs = 48000.0;
     Limiter limiter;
-    Fade limFade;
     MeterHub meterHub;
-    std::vector<float> dry[2];
-    bool on = false;
-    int mode = 0;
+    ControlClock clock;
     float grDb = 0.0f;
 };
 } // namespace nl

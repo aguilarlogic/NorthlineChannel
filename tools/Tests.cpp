@@ -202,6 +202,9 @@ void testDynamics()
         const float lp = std::max (peakDb (lo, 0, 0), peakDb (lo, 0, 1));
         check (lp <= -1.0f + 0.001f, la ? "lookahead limiter holds -1 dBFS ceiling" : "zero-latency limiter holds -1 dBFS ceiling", juce::String (lp, 3) + " dBFS");
     }
+    // Latency follows lim_mode, not lim_on (D2): go back to the zero-latency mode so the
+    // following sections can compare against the undelayed input.
+    setParam (*p, P::limMode, 0);
 
     // Gate closes on quiet input and opens on loud input.
     allModulesOff (*p);
