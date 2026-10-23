@@ -718,3 +718,77 @@ NL_TEST (eq_displayIncludesDynamicGain)
     tool::check (worst <= 0.1, "display with the dynamic gain equals the DSP (<= 0.1 dB, 48 and 96 kHz, key -27 to -15 dBFS)",
                  "worst " + juce::String (worst, 4) + " dB");
 }
+
+// At most one refinement design per control tick, however many bands change at once. Worst case:
+// all four bands switch in the same tick to settings whose closed form misses the tolerance. The
+// bands must still converge to the exact design once the parameters have settled.
+NL_TEST (eq_refinementBudgetPerTick)
+{
+    const double fs = 48000.0;
+    eqd::Context ctx;
+    ctx.prepare (fs);
+
+    struct Pick { int band = 0, type = 0; float freq = 0.0f, gain = 0.0f, q = 1.0f; };
+    std::vector<Pick> picks;
+    for (int band = 0; band < 4; ++band)
+    {
+        Pick found;
+        bool ok = false;
+        for (int type = 0; type < 3 && ! ok; ++type)
+            for (float freq : { 60.0f, 150.0f, 400.0f, 1000.0f, 2500.0f, 6000.0f, 12000.0f })
+                for (float gain : { -15.0f, -9.0f, 9.0f, 15.0f })
+                    for (float q : { 0.7f, 1.4f, 3.0f })
+                    {
+                        if (ok) break;
+                        const auto bk = EqModule::kindOf (band, type, q);
+                        const eqd::Shape s { bk.kind, freq, gain, EqModule::effectiveQ (bk, gain, 0.0f) };
+                        if (eqd::designBand (ctx, s).stage >= 2) { found = { band, type, freq, gain, q }; ok = true; }
+                    }
+        if (ok) picks.push_back (found);
+    }
+    tool::check (picks.size() == 4, "a setting that needs the refinement exists for every band", "found " + juce::String ((int) picks.size()) + " of 4");
+    if (picks.size() != 4) return;
+
+    EqParams target;
+    for (const auto& pk : picks)
+    {
+        auto& bp = target.band[pk.band];
+        bp.type = pk.type;
+        bp.freq = pk.freq;
+        bp.gain = pk.gain;
+        bp.q = pk.q;
+    }
+
+    EqModule m;
+    m.prepare (fs);
+    m.setParams (EqParams {}); // all bands at 0 dB: nothing to design yet
+    const int n = (int) (fs * 2.5);
+    std::vector<float> l ((size_t) n, 0.0f), r ((size_t) n, 0.0f);
+    int maxPerTick = 0, total = 0;
+    for (int i = 0; i < n; i += 32)
+    {
+        if (i == 4096) m.setParams (target); // all four bands change in the same control tick
+        float* io[2] { l.data() + i, r.data() + i };
+        m.process (io, 2, 32, nullptr);
+        const int c = m.refinementsThisTick();
+        maxPerTick = std::max (maxPerTick, c);
+        total += c;
+    }
+    tool::check (maxPerTick <= 1, "at most one refinement design per control tick, all four bands changing at once",
+                 "max " + juce::String (maxPerTick) + " per tick, " + juce::String (total) + " refinements in total");
+    tool::check (total >= 4, "the scenario did need the refinement (at least one per band)", juce::String (total) + " refinements");
+
+    // Settled: the DSP response of each probe equals the exact design of the target.
+    double worst = 0.0;
+    for (double f : { 200.0, 900.0, 2500.0, 6000.0, 12000.0 })
+    {
+        EqModule p = m;
+        const int len = 24000;
+        const float amp = 0.1f;
+        auto x = sineVec (fs, f, amp, len), y = x;
+        runEq (p, x, y, 256);
+        const double dsp = 20.0 * std::log10 (rmsOf (x, len / 2, len) / (amp / std::sqrt (2.0)));
+        worst = std::max (worst, std::abs (dsp - (double) EqModule::magnitudeDb (target, fs, f, 0)));
+    }
+    tool::check (worst <= 0.05, "after the parameters settle, every band equals its exact design (<= 0.05 dB)", "worst " + juce::String (worst, 4) + " dB");
+}
