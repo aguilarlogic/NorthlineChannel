@@ -242,7 +242,7 @@ private:
 
 //==============================================================================
 // Integer delay for the dry path of a latency-bearing section.
-class DelayLine
+class DryDelay
 {
 public:
     void prepare (int maxDelay, int numChannels)

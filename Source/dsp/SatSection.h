@@ -338,7 +338,7 @@ private:
     const std::array<CalTable, shaper::numTypes>* calHq = nullptr;
     DroopFir droopEco, droopHq;
     Oversampler4 os, osTwin;
-    DelayLine delay;
+    DryDelay delay;
     Fade fadeOn, fadeX;
     Smoothed driveSm, toneSm, mixSm, autoSm, opSm;
     Slot slot[2];

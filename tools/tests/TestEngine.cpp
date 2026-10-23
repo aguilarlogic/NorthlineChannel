@@ -536,14 +536,16 @@ NL_TEST (engine_globalMix)
     check (maxAbsDiff (avg, o50) < 1.0e-6f, "mix 50% is the average of dry and wet", "max diff " + juce::String (maxAbsDiff (avg, o50), 8));
     check (maxAbsDiff (o100, o0, delay) > 0.01f, "mix 100% differs from the dry signal (the chain is audible)");
 
-    // Mix moves smoothly: a step from 100% to 0% mid-stream has no discontinuity beyond the signal's.
+    // Mix moves smoothly: a step from 100% to 0% mid-stream has no discontinuity beyond the
+    // signals' own (the larger of the wet and the dry sample-to-sample steps).
     auto q = make (100.0f);
     const auto o = renderWithAutomation (*q, in, 256, { { 40960, P::globalMix, 0.0f } });
     float step = 0.0f, ref = 0.0f;
     for (int i = 1; i < o.getNumSamples(); ++i)
     {
         step = std::max (step, std::abs (o.getSample (0, i) - o.getSample (0, i - 1)));
-        ref = std::max (ref, std::abs (o100.getSample (0, i) - o100.getSample (0, i - 1)));
+        ref = std::max ({ ref, std::abs (o100.getSample (0, i) - o100.getSample (0, i - 1)),
+                         std::abs (o0.getSample (0, i) - o0.getSample (0, i - 1)) });
     }
     check (step < 3.0f * ref, "global mix changes are click-free", "largest step " + juce::String (step, 3) + ", signal's own " + juce::String (ref, 3));
 }
