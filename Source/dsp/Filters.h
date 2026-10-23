@@ -118,13 +118,16 @@ struct OnePole
 };
 
 //==============================================================================
-// High-pass or low-pass with 6/12/18/24 dB/oct slopes. Butterworth by default
-// (RES = 0.707); RES scales the Q of the final section only. Slope changes
-// cross-fade between the old and new structures to avoid clicks.
+// High-pass or low-pass with 6 / 12 / 18 / 24 / 36 / 48 dB/oct slopes: a Butterworth cascade of
+// an optional one-pole and 0 to 4 TPT state-variable sections (bilinear transform, so the
+// response equals the digital Butterworth prototype). RES scales the Q of the last section
+// (the resonant one) relative to its Butterworth value; the default 0.7071 is the plain
+// Butterworth response. Slope changes cross-fade between the old and the new structure to
+// avoid clicks; cut-off changes glide.
 class SlopeFilter
 {
 public:
-    enum Slope { s6 = 0, s12, s18, s24 };
+    enum Slope { s6 = 0, s12, s18, s24, s36, s48, numSlopes };
 
     void prepare (double sampleRate)
     {
@@ -136,8 +139,7 @@ public:
 
     void reset()
     {
-        for (auto& set : sets)
-            for (auto& ch : set.ch) ch = {};
+        clearState();
         fade.snap (false);
         freq.snap();
         fading = false;
@@ -145,30 +147,54 @@ public:
         dirty = true;
     }
 
+    // Zeroes the filter memory (keeps frequency, slope and resonance).
+    void clearState()
+    {
+        for (auto& set : sets)
+            for (auto& ch : set.ch) ch = {};
+    }
+
+    // Jumps to the given settings without gliding or cross-fading.
+    void snapTo (bool isHighPass, float frequencyHz, int slope, float res)
+    {
+        highPass = isHighPass;
+        resonance = res;
+        freq.setTarget (std::log (std::max (5.0f, frequencyHz)));
+        freq.snap();
+        sets[active].slope = std::clamp (slope, 0, (int) numSlopes - 1);
+        fading = false;
+        pendingSlope = -1;
+        fade.snap (false);
+        clearState();
+        dirty = true;
+    }
+
     void setParams (bool isHighPass, float frequencyHz, int slope, float res)
     {
+        slope = std::clamp (slope, 0, (int) numSlopes - 1);
         highPass = isHighPass;
         freq.setTarget (std::log (std::max (5.0f, frequencyHz)));
         if (std::abs (res - resonance) > 1.0e-4f) { resonance = res; dirty = true; }
-        if (slope != sets[active].slope)
+        if (slope == sets[active].slope)
         {
-            if (! fading)
-            {
-                const int other = 1 - active;
-                sets[other].slope = slope;
-                for (auto& ch : sets[other].ch) ch = {};
-                fadeFrom = active;
-                active = other;
-                fading = true;
-                fade.value = 0.0f;
-                fade.target = 1.0f;
-                fadeValueForChannel = 0.0f;
-                dirty = true;
-            }
-            else
-            {
-                pendingSlope = slope; // applied after the current fade
-            }
+            pendingSlope = -1;
+        }
+        else if (! fading)
+        {
+            const int other = 1 - active;
+            sets[other].slope = slope;
+            for (auto& ch : sets[other].ch) ch = {};
+            fadeFrom = active;
+            active = other;
+            fading = true;
+            fade.value = 0.0f;
+            fade.target = 1.0f;
+            fadeValueForChannel = 0.0f;
+            dirty = true;
+        }
+        else
+        {
+            pendingSlope = slope; // applied after the current fade
         }
     }
 
@@ -214,28 +240,51 @@ public:
     {
         const auto& set = sets[active];
         float m = 1.0f;
-        if (set.slope == s6 || set.slope == s18)
+        const Layout lay = layout (set.slope);
+        if (lay.pole)
         {
             const float lp = set.onePole.magnitudeLP (f, fs);
             m *= highPass ? std::sqrt (std::max (0.0f, 1.0f - lp * lp)) : lp;
         }
-        if (set.slope != s6) m *= set.svfA.magnitude (f, fs);
-        if (set.slope == s24) m *= set.svfB.magnitude (f, fs);
+        for (int i = 0; i < lay.sections; ++i) m *= set.bq[i].magnitude (f, fs);
         return m;
     }
 
 private:
+    static constexpr int kMaxSections = 4;
+
+    struct Layout
+    {
+        bool pole;
+        int sections;
+        float q[kMaxSections]; // Butterworth Q per section; the last one is scaled by the resonance
+    };
+
+    static Layout layout (int slope) noexcept
+    {
+        switch (slope)
+        {
+            case s6:  return { true, 0, { 0, 0, 0, 0 } };
+            case s12: return { false, 1, { 0.70710678f, 0, 0, 0 } };
+            case s18: return { true, 1, { 1.0f, 0, 0, 0 } };
+            case s24: return { false, 2, { 0.54119610f, 1.30656296f, 0, 0 } };
+            case s36: return { false, 3, { 0.51763809f, 0.70710678f, 1.93185165f, 0 } };
+            case s48:
+            default:  return { false, 4, { 0.50979558f, 0.60134489f, 0.89997622f, 2.56291545f } };
+        }
+    }
+
     struct ChannelState
     {
         OnePole p;
-        SvfState a, b;
+        SvfState b[kMaxSections];
     };
 
     struct Set
     {
         int slope = s12;
         OnePole onePole; // coefficient holder
-        SvfCoefs svfA, svfB;
+        SvfCoefs bq[kMaxSections];
         ChannelState ch[2];
     };
 
@@ -244,36 +293,20 @@ private:
         const float f = std::exp (freq.current);
         const auto type = highPass ? SvfType::HighPass : SvfType::LowPass;
         const float resScale = resonance / 0.70710678f;
+        const Layout lay = layout (set.slope);
         set.onePole.setCutoff (fs, f);
-        switch (set.slope)
-        {
-            case s6: break;
-            case s12: set.svfA = makeSvf (type, fs, f, resonance); break;
-            case s18: set.svfA = makeSvf (type, fs, f, 1.0f * resScale); break;
-            case s24:
-                set.svfA = makeSvf (type, fs, f, 0.54119610f);
-                set.svfB = makeSvf (type, fs, f, 1.30656296f * resScale);
-                break;
-            default: break;
-        }
+        for (int i = 0; i < lay.sections; ++i)
+            set.bq[i] = makeSvf (type, fs, f, lay.q[i] * (i == lay.sections - 1 ? resScale : 1.0f));
         for (auto& ch : set.ch) ch.p.G = set.onePole.G;
     }
 
     inline float run (Set& set, int ch, float x) noexcept
     {
         auto& st = set.ch[ch];
-        switch (set.slope)
-        {
-            case s6:  return highPass ? st.p.highpass (x) : st.p.lowpass (x);
-            case s12: return st.a.process (x, set.svfA);
-            case s18:
-            {
-                const float y = highPass ? st.p.highpass (x) : st.p.lowpass (x);
-                return st.a.process (y, set.svfA);
-            }
-            case s24: return st.b.process (st.a.process (x, set.svfA), set.svfB);
-            default:  return x;
-        }
+        const Layout lay = layout (set.slope);
+        if (lay.pole) x = highPass ? st.p.highpass (x) : st.p.lowpass (x);
+        for (int i = 0; i < lay.sections; ++i) x = st.b[i].process (x, set.bq[i]);
+        return x;
     }
 
     double fs = 48000.0;
