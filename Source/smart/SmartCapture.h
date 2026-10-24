@@ -67,10 +67,10 @@ public:
         const auto serial = requestSerial.load (std::memory_order_acquire);
         if (serial != seenSerial)
         {
+            // A new request always starts a capture, even over a stale Ready left by cancel().
             seenSerial = serial;
             written = 0;
-            if (state.load (std::memory_order_relaxed) == Idle && target.load (std::memory_order_relaxed) > 0)
-                state.store (Recording, std::memory_order_release);
+            if (target.load (std::memory_order_relaxed) > 0) state.store (Recording, std::memory_order_release);
         }
         if (state.load (std::memory_order_relaxed) != Recording) return;
 
