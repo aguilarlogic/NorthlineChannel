@@ -16,6 +16,7 @@ constexpr Range kLimiterRange { P::limOn, P::limRelease };
 constexpr Range kInputRange { P::inGain, P::globalMix }; // input stage, output gain, mix
 
 constexpr double kMaxRingSampleRate = 384000.0;
+constexpr size_t kAnalyserRingSamples = 32768; // ~0.7 s at 48 kHz, ~85 ms at 384 kHz
 } // namespace
 
 ChannelStrip::ChannelStrip (juce::AudioProcessorValueTreeState& state)
@@ -31,6 +32,7 @@ ChannelStrip::ChannelStrip (juce::AudioProcessorValueTreeState& state)
     // The rings are sized once for the worst case, so prepare() never reallocates under a live consumer.
     frames.allocate (256);
     samples.allocate ((size_t) (kMaxRingSampleRate * 0.75));
+    for (auto& r : analyserRings) r.allocate (kAnalyserRingSamples);
 }
 
 void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels)
@@ -69,8 +71,12 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
         tapDry[c].assign ((size_t) maxBlock, 0.0f);
         key[c].assign ((size_t) maxBlock, 0.0f);
         keyMs[c].assign ((size_t) maxBlock, 0.0f);
+        scopeIn[c].assign ((size_t) maxBlock, 0.0f);
     }
     sampleScratch.assign ((size_t) maxBlock, StereoSample {});
+    analyserScratch.assign ((size_t) maxBlock, 0.0f);
+    for (auto& s : scopes) s.prepare (fs);
+    dsBand2Scope.prepare (fs);
 
     // Consumers drop whatever the rings still hold from before this prepare.
     ringGeneration.fetch_add (1, std::memory_order_release);
@@ -176,6 +182,54 @@ size_t ChannelStrip::popOutputSamples (StereoSample* out, size_t maxCount, bool*
         return 0;
     }
     return samples.pop (out, maxCount);
+}
+
+size_t ChannelStrip::popAnalyser (AnalyserTap tap, float* out, size_t maxCount) noexcept
+{
+    if (maxCount == 0) return 0;
+    auto& ring = analyserRings[(size_t) tap];
+    auto& seen = seenAnalyserGeneration[(size_t) tap];
+    const auto generation = ringGeneration.load (std::memory_order_acquire);
+    if (generation != seen)
+    {
+        seen = generation;
+        while (ring.pop (out, maxCount) == maxCount) {}
+        return 0;
+    }
+    return ring.pop (out, maxCount);
+}
+
+// Scope points for one slot, on the absolute grid. A silent slot reports its (delayed) pass-through
+// with no reduction, so the scope keeps running whatever the module state.
+void ChannelStrip::scopeSlot (int id, const float* const* in, const float* const* out, int numCh, int n, bool silent) noexcept
+{
+    float gr = 0.0f, key = -120.0f, gr2 = 0.0f, key2 = -120.0f;
+    if (! silent)
+    {
+        switch (id)
+        {
+            case modGate: gr = gate.getGainReductionDb(); key = gate.getKeyLevelDb(); break;
+            case modComp: gr = comp.getGainReductionDb(); key = comp.getKeyLevelDb(); break;
+            case modDs:
+                gr = ds.getGainReductionDb (0);  key = ds.getKeyLevelDb (0);
+                gr2 = ds.getGainReductionDb (1); key2 = ds.getKeyLevelDb (1);
+                break;
+            default: break;
+        }
+    }
+    scopes[(size_t) id].process (in, out, numCh, n, gr, key);
+    if (id == modDs) dsBand2Scope.process (in, out, numCh, n, gr2, key2);
+}
+
+// Mono signal for the analysers: channel 0 in M/S, the average of L and R otherwise.
+void ChannelStrip::tapMono (AnalyserTap tap, const float* const* io, int numCh, int n, bool ms) noexcept
+{
+    auto& scratch = analyserScratch;
+    if (numCh == 2 && ! ms)
+        for (int i = 0; i < n; ++i) scratch[(size_t) i] = 0.5f * (io[0][i] + io[1][i]);
+    else
+        for (int i = 0; i < n; ++i) scratch[(size_t) i] = io[0][i];
+    analyserRings[(size_t) tap].push (scratch.data(), (size_t) n);
 }
 
 void ChannelStrip::setTestModuleLatency (int moduleId, int extraSamples)
@@ -479,6 +533,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     const float* keyLr[2] { nullptr, nullptr };
     const float* keyMsPtr[2] { nullptr, nullptr };
     bool keyMsReady = false;
+    float scPeak = 0.0f;
     if (sidechain != nullptr && sidechainChannels > 0)
     {
         for (int c = 0; c < numChannels; ++c)
@@ -486,8 +541,11 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             const float* src = sidechain[std::min (c, sidechainChannels - 1)];
             std::copy (src, src + n, key[c].data());
             keyLr[c] = key[c].data();
+            for (int i = 0; i < n; ++i) scPeak = std::max (scPeak, std::abs (src[i]));
         }
     }
+    scLive.store (sidechain != nullptr && sidechainChannels > 0 ? ScopeTap::toDb (scPeak) : -120.0f, std::memory_order_relaxed);
+    const bool analysing = analyserUsers.load (std::memory_order_relaxed) > 0;
 
     // Module chain in the user's order. A disabled module costs nothing but the delay of its input
     // by the module's latency, so switching it never shifts timing.
@@ -508,6 +566,16 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             {
                 bypassDelay[(size_t) id].setDelay (lat);
                 bypassDelay[(size_t) id].process (io, io, numChannels, n);
+            }
+            scopeSlot (id, io, io, numChannels, n, true);
+            if (analysing && id == modEq)
+            {
+                tapMono (AnalyserTap::eqIn, io, numChannels, n, inMs);
+                tapMono (AnalyserTap::eqOut, io, numChannels, n, inMs);
+            }
+            else if (analysing && id == modPre)
+            {
+                tapMono (AnalyserTap::preOut, io, numChannels, n, inMs);
             }
             continue;
         }
@@ -542,6 +610,11 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             }
         }
 
+        // The slot's signal before the module, for the scope and the analysers.
+        for (int c = 0; c < numChannels; ++c) std::copy (io[c], io[c] + n, scopeIn[c].data());
+        const float* inPtr[2] { scopeIn[0].data(), scopeIn[1].data() };
+        if (analysing && id == modEq) tapMono (AnalyserTap::eqIn, inPtr, numChannels, n, inMs);
+
         if (lat > 0) bypassDelay[(size_t) id].setDelay (lat);
         if (fade.isFullyOn())
         {
@@ -569,6 +642,14 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
                 for (int c = 0; c < numChannels; ++c) io[c][i] = dryPtr[c][i] + (io[c][i] - dryPtr[c][i]) * w;
             }
             if (fade.isSilent()) resetModule (id);
+        }
+
+        const float* outPtr[2] { io[0], numChannels > 1 ? io[1] : io[0] };
+        scopeSlot (id, inPtr, outPtr, numChannels, n, fade.isSilent());
+        if (analysing)
+        {
+            if (id == modEq) tapMono (AnalyserTap::eqOut, outPtr, numChannels, n, inMs);
+            else if (id == modPre) tapMono (AnalyserTap::preOut, outPtr, numChannels, n, inMs);
         }
 
         const float us = (float) ((double) (juce::Time::getHighResolutionTicks() - t0) * ticksToUs);
@@ -618,6 +699,9 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     for (int m = 0; m < 6; ++m) frame.moduleUs[m] = moduleUsSmoothed[(size_t) m];
     frame.totalUs = (float) ((double) (tEnd - tStart) * ticksToUs);
     frames.push (frame);
+
+    for (int b = 0; b < 4; ++b)
+        eqDynLive[(size_t) b].store (moduleFade[modEq].isSilent() ? 0.0f : eq.getDynGainDb (b), std::memory_order_relaxed);
 
     clock.advance (n); // once per block, after every user of the clock
 }
