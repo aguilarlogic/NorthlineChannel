@@ -93,3 +93,16 @@ target_link_libraries(NorthlineTool
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# AddressSanitizer for the test tool (MSVC): configure a separate build directory with -DNL_ASAN=ON, e.g.
+#   cmake -S . -B build-asan -DNL_ASAN=ON
+# The sanitizer needs frame pointers (/Oy-), debug information for the reports (/Zi) and no incremental
+# linking. Off by default; the plug-in is not affected.
+option(NL_ASAN "Build NorthlineTool with AddressSanitizer (MSVC)" OFF)
+if(NL_ASAN)
+    if(NOT MSVC)
+        message(FATAL_ERROR "NL_ASAN is only supported with MSVC")
+    endif()
+    target_compile_options(NorthlineTool PRIVATE /fsanitize=address /Oy- /Zi)
+    target_link_options(NorthlineTool PRIVATE /INCREMENTAL:NO /DEBUG)
+endif()

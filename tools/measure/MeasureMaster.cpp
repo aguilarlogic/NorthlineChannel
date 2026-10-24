@@ -1,5 +1,6 @@
 // Measurement suite "master": limiter modes, true-peak behaviour, loudness conformance, MeterHub cost.
 #include "Measure.h"
+#include "BenchTimer.h"
 #include "../tests/MasterSignals.h"
 
 using namespace nl;
@@ -12,9 +13,10 @@ namespace
 {
 juce::String pf (bool ok) { return ok ? "pass" : "FAIL"; }
 
+// Thread CPU time (see BenchTimer.h), so other processes on the machine do not count.
 double seconds()
 {
-    return (double) juce::Time::getHighResolutionTicks() / (double) juce::Time::getHighResolutionTicksPerSecond();
+    return CpuClock::threadSeconds();
 }
 
 // CPU cost of a callable processing `audioSeconds` of audio, as a percentage of one core (best of `runs`).
@@ -305,7 +307,7 @@ NL_MEASURE (master, "Limiter modes (latency, true peak, THD, release), EBU 3341/
 
     //--------------------------------------------------------------------------
     r.h2 ("CPU cost");
-    r.para ("Percentage of one core (best of several runs), stereo, 64-sample blocks, loud pink noise, flush-to-zero on. The MeterHub target is 0.05% at 48 kHz stereo.");
+    r.para ("Percentage of one core (thread CPU time, best of several runs), stereo, 64-sample blocks, loud pink noise, flush-to-zero on. The MeterHub target is 0.05% at 48 kHz stereo.");
     r.table ({ "Configuration", "48 kHz", "96 kHz" });
     {
         const double secs = quick ? 5.0 : 20.0;

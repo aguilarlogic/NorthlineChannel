@@ -283,20 +283,47 @@ inline void updateBias (const Coefs& c, State& st) noexcept
     st.biased.rebias();
 }
 
-template <class S, bool Tube>
-inline void runSegment (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const float* in, float* out, int n, Ramp r) noexcept
+// Causal FIR over one block, with the history in a 64-entry ring (`pos` is the next write slot, the newest
+// sample is at pos - 1): out[i] = sum over k of h[k] * x[i - k]. Each output adds its taps in the same order
+// whatever the block size, so splitting a block does not change the result. n <= kFirMaxBlock.
+constexpr int kFirMaxBlock = 4 * kControlBlock; // a 4x control segment, the longest block the shaper gets
+
+inline void firRing (const float* h, int taps, float* ring, int& pos, const float* in, float* out, int n) noexcept
 {
+    float win[kFirMaxBlock + 64]; // taps - 1 history samples, then the block
+    const int hl = std::max (0, taps - 1);
+    for (int j = 0; j < hl; ++j) win[j] = ring[(pos - hl + j) & 63];
+    for (int i = 0; i < n; ++i) win[hl + i] = in[i];
+    for (int i = 0; i < n; ++i) ring[(pos + i) & 63] = in[i];
+    pos = (pos + n) & 63;
+    std::fill (out, out + n, 0.0f);
+    for (int k = 0; k < taps; ++k)
+    {
+        const float hk = h[k];
+        const float* src = win + hl - k;
+        for (int i = 0; i < n; ++i) out[i] += hk * src[i];
+    }
+}
+
+// One chunk of at most kFirMaxBlock samples. The ramp is taken by reference, so chunks continue it exactly.
+template <class S, bool Tube>
+inline void runChunk (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const float* in, float* out, int n, Ramp& r) noexcept
+{
+    // Pass 1: pre-emphasis (sequential filters). Pass 2: the droop FIR over the block (linear, no feedback).
+    // Pass 3: gain, shaper, post-emphasis, per sample.
+    float pre[kFirMaxBlock], drooped[kFirMaxBlock];
     for (int i = 0; i < n; ++i)
     {
         float x = in[i];
         if (c.tiltOn) x = st.tPreHS.process (st.tPreLS.process (x, c.tPreLS), c.tPreHS) * c.tPreGain;
         if (c.preLSOn) x = st.preLS.process (x, c.preLS);
         if (c.preHSOn) x = st.preHS.process (x, c.preHS);
-        st.droopHist[st.droopPos] = x;
-        float acc = 0.0f;
-        for (int k = 0; k < c.droop.taps; ++k) acc += c.droop.h[(size_t) k] * st.droopHist[(st.droopPos - k) & 63];
-        st.droopPos = (st.droopPos + 1) & 63;
-        x = acc;
+        pre[i] = x;
+    }
+    firRing (c.droop.h.data(), c.droop.taps, st.droopHist, st.droopPos, pre, drooped, n);
+    for (int i = 0; i < n; ++i)
+    {
+        const float x = drooped[i];
         const double u = (double) x * r.g;
         r.g += r.dg;
         if (Tube || c.dynHF) // envelope of the shaper input: Tube bias, Tape HF loss
@@ -330,6 +357,13 @@ inline void runSegment (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const 
         if (c.tiltOn) y = st.tPostLS.process (st.tPostHS.process (y, c.tPostHS), c.tPostLS) * c.tPostGain;
         out[i] = y;
     }
+}
+
+template <class S, bool Tube>
+inline void runSegment (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const float* in, float* out, int n, Ramp r) noexcept
+{
+    for (int i = 0; i < n; i += kFirMaxBlock)
+        runChunk<S, Tube> (adaa, st, c, in + i, out + i, std::min (kFirMaxBlock, n - i), r);
 }
 
 inline void process (State& st, const Coefs& c, const float* in, float* out, int n, const Ramp& r) noexcept

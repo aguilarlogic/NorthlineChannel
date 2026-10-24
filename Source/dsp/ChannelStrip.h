@@ -128,6 +128,16 @@ private:
 
     void updateParams (bool force);
     void refreshLatency();
+
+    // Quality switch (non-automatable). The output fades out, the new quality is applied while it is
+    // silent (the latency changes then), and the output fades back in, so the switch does not click.
+    enum class QualityFade : int { Steady, Down, Hold, Up };
+    int rawQuality() const noexcept;
+    void advanceQualityFade() noexcept;
+    void applyQualityFade (float* const* io, int numChannels, int n) noexcept;
+    QualityFade qualityFade = QualityFade::Steady;
+    int appliedQuality = -1; // the quality the modules run at
+    int qualityRamp = 0, qualityRampLen = 1, qualityHoldLen = 1;
     bool moduleWantsMs (int id) const noexcept;
     bool moduleEnabled (int id) const noexcept;
     void runModule (int id, float* const* io, int numChannels, int n, const float* const* key);

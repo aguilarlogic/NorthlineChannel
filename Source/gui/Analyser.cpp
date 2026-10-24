@@ -120,7 +120,8 @@ void EqAnalyser::attach()
 void EqAnalyser::detach()
 {
     if (! attached) return;
-    stopThread (2000);
+    // Wait for the thread to exit: its loop reads members of this object, which die right after this call.
+    stopThread (-1);
     strip.analyserStop();
     attached = false;
 }
@@ -211,7 +212,8 @@ void HarmonicAnalyser::attach()
 void HarmonicAnalyser::detach()
 {
     if (! attached) return;
-    stopThread (2000);
+    // Wait for the thread to exit: its loop reads members of this object, which die right after this call.
+    stopThread (-1);
     strip.analyserStop();
     attached = false;
 }

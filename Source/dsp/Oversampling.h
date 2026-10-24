@@ -92,6 +92,13 @@ inline float dot (const float* a, const float* b, int n) noexcept
 #endif
 }
 
+// acc[i] += c * s[i]. A FIR is evaluated with its taps in the outer loop, so every output adds its taps
+// in the same order whatever the block size, and the loop vectorises over the outputs.
+inline void accumulateTap (float* acc, const float* s, float c, int n) noexcept
+{
+    for (int i = 0; i < n; ++i) acc[i] += c * s[i];
+}
+
 // One FIR with streaming history. Coefficients are stored zero-padded on the "old" side to a
 // multiple of 4 so the dot product can read a contiguous window.
 struct History
@@ -125,6 +132,7 @@ struct Up2
     std::vector<float> even, odd;
     int pe = 0, po = 0;
     History hist;
+    std::vector<float> accE, accO; // scratch, sized in design()
 
     void design (const std::vector<double>& h, int maxIn)
     {
@@ -133,6 +141,8 @@ struct Up2
         even = padCoefs (e, pe);
         odd = padCoefs (o, po);
         hist.allocate (std::max (pe, po), maxIn);
+        accE.assign ((size_t) maxIn, 0.0f);
+        accO.assign ((size_t) maxIn, 0.0f);
     }
     void reset() { hist.clear(); }
 
@@ -140,11 +150,15 @@ struct Up2
     {
         float* x = hist.head();
         std::memcpy (x, in, sizeof (float) * (size_t) n);
+        std::fill (accE.begin(), accE.begin() + n, 0.0f);
+        std::fill (accO.begin(), accO.begin() + n, 0.0f);
+        // output i of a phase: the window that ends at x[i] (its most recent sample meets the first tap)
+        for (int k = 0; k < pe; ++k) accumulateTap (accE.data(), x + 1 - pe + k, even[(size_t) k], n);
+        for (int k = 0; k < po; ++k) accumulateTap (accO.data(), x + 1 - po + k, odd[(size_t) k], n);
         for (int i = 0; i < n; ++i)
         {
-            // window ending at x[i]: the most recent sample is multiplied by the first tap
-            out[2 * i] = dot (even.data(), x + i + 1 - pe, pe);
-            out[2 * i + 1] = dot (odd.data(), x + i + 1 - po, po);
+            out[2 * i] = accE[(size_t) i];
+            out[2 * i + 1] = accO[(size_t) i];
         }
         hist.commit (n);
     }
@@ -156,19 +170,39 @@ struct Down2
     std::vector<float> taps;
     int pt = 0;
     History hist;
+    std::vector<float> phase0, phase1, acc; // scratch, sized in design()
 
     void design (const std::vector<double>& h, int maxOut)
     {
         taps = padCoefs (h, pt);
         hist.allocate (pt, 2 * maxOut);
+        phase0.assign ((size_t) (maxOut + pt), 0.0f);
+        phase1.assign ((size_t) (maxOut + pt), 0.0f);
+        acc.assign ((size_t) maxOut, 0.0f);
     }
     void reset() { hist.clear(); }
 
+    // out[i] = sum_k taps[k] * win[2i + k] with win = the window that starts pt - 1 samples before the new
+    // input. Splitting win into even and odd samples, win[2i + k] = phase(k & 1)[i + (k >> 1)], so each tap
+    // is a contiguous pass over the outputs.
     void process (const float* in, float* out, int n) noexcept
     {
         float* x = hist.head();
         std::memcpy (x, in, sizeof (float) * (size_t) (2 * n));
-        for (int i = 0; i < n; ++i) out[i] = dot (taps.data(), x + 2 * i + 1 - pt, pt);
+        const float* win = x + 1 - pt;
+        const int len = n + ((pt - 1) >> 1);
+        for (int m = 0; m < len; ++m)
+        {
+            phase0[(size_t) m] = win[2 * m];
+            phase1[(size_t) m] = win[2 * m + 1];
+        }
+        std::fill (acc.begin(), acc.begin() + n, 0.0f);
+        for (int k = 0; k < pt; ++k)
+        {
+            const float* src = (k & 1 ? phase1.data() : phase0.data()) + (k >> 1);
+            accumulateTap (acc.data(), src, taps[(size_t) k], n);
+        }
+        std::memcpy (out, acc.data(), sizeof (float) * (size_t) n);
         hist.commit (2 * n);
     }
 };
