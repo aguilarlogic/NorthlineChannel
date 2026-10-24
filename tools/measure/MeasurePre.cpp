@@ -1,5 +1,6 @@
 #include "../PreHarness.h"
 #include "Measure.h"
+#include "BenchTimer.h"
 #include "dsp/SatEngine.h"
 #include <chrono>
 
@@ -259,19 +260,19 @@ NL_MEASURE (pre, "PRE: saturation alias, staging, distortion, filters, Weight, s
             for (int rep = 0; rep < (quick ? 1 : 3); ++rep)
             {
                 std::vector<float> l = x, rr = x;
-                const auto t0 = std::chrono::steady_clock::now();
+                const double t0 = tool::CpuClock::threadSeconds(); // thread CPU time (BenchTimer.h)
                 for (size_t pos = 0; pos < n; pos += 512)
                 {
                     const int len = (int) std::min<size_t> (512, n - pos);
                     float* ch[2] { l.data() + pos, rr.data() + pos };
                     m->process (ch, 2, len);
                 }
-                const auto t1 = std::chrono::steady_clock::now();
-                best = std::min (best, std::chrono::duration<double> (t1 - t0).count());
+                const double t1 = tool::CpuClock::threadSeconds();
+                best = std::min (best, t1 - t0);
             }
             return 100.0 * best / ((double) n / fs); // percent of one core for real-time audio
         };
-        r.table ({ "Configuration", "CPU (%)" });
+        r.table ({ "Configuration", "CPU (%, thread CPU time)" });
         r.row ({ "Bypassed (PRE on, nothing enabled)", juce::String (cpu (PreParams {}), 3) });
         for (int hq = 0; hq < 2; ++hq)
         {

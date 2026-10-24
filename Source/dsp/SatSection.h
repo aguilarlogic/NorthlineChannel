@@ -203,12 +203,11 @@ public:
                 // linear twin of the wet path (droop FIR + ADAA average) keeps Mix phase-coherent
                 auto& tw = twin[c];
                 const auto& d = slot[curSlot].cf.droop;
+                float droopOut[kSeg];
+                sat::firRing (d.h.data(), d.taps, tw.hist, tw.pos, x, droopOut, len); // reads x before it is changed below
                 for (int i = 0; i < len; ++i)
                 {
-                    tw.hist[tw.pos] = x[i];
-                    float acc = 0.0f;
-                    for (int k = 0; k < d.taps; ++k) acc += d.h[(size_t) k] * tw.hist[(tw.pos - k) & 63];
-                    tw.pos = (tw.pos + 1) & 63;
+                    const float acc = droopOut[i];
                     const float lin = 0.5f * (acc + tw.prev);
                     tw.prev = acc;
                     const float mixed = lin + mv[i] * (wetA[i] - lin);
@@ -248,13 +247,11 @@ private:
     void linearTwin4 (int c, const float* up4, float* lin4, int n4) noexcept
     {
         auto& tw = twin4[c];
-        const auto& d = droopHq;
+        float droopOut[4 * kSeg];
+        sat::firRing (droopHq.h.data(), droopHq.taps, tw.hist, tw.pos, up4, droopOut, n4);
         for (int i = 0; i < n4; ++i)
         {
-            tw.hist[tw.pos] = up4[i];
-            float acc = 0.0f;
-            for (int k = 0; k < d.taps; ++k) acc += d.h[(size_t) k] * tw.hist[(tw.pos - k) & 63];
-            tw.pos = (tw.pos + 1) & 63;
+            const float acc = droopOut[i];
             lin4[i] = (acc + tw.d1 + tw.d2) * (1.0f / 3.0f);
             tw.d2 = tw.d1;
             tw.d1 = acc;

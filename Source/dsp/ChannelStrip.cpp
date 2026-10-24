@@ -40,6 +40,8 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
     fs = sampleRate;
     maxBlock = std::max (1, maxBlockSize);
     channels = juce::jlimit (1, 2, numChannels);
+    qualityRampLen = std::max (1, (int) std::lround (0.01 * fs)); // 10 ms down, 10 ms hold, 10 ms up
+    qualityHoldLen = qualityRampLen;
 
     pre.prepare (fs, maxBlock);
     gate.prepare (fs, maxBlock);
@@ -99,6 +101,9 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
 
 void ChannelStrip::reset()
 {
+    appliedQuality = rawQuality();
+    qualityFade = QualityFade::Steady;
+    qualityRamp = 0;
     updateParams (true);
     clock.reset();
 
@@ -292,6 +297,7 @@ bool ChannelStrip::moduleWantsMs (int id) const noexcept
 void ChannelStrip::updateParams (bool force)
 {
     for (int i = 0; i < P::count; ++i) snap.v[(size_t) i] = values[(size_t) i]->load (std::memory_order_relaxed);
+    if (appliedQuality >= 0) snap.v[(size_t) P::quality] = (float) appliedQuality; // applied by the quality switch
     if (! haveSnap || forceFull.load (std::memory_order_relaxed)) force = true;
 
     const auto changed = [&] (Range r)
@@ -337,6 +343,53 @@ void ChannelStrip::updateParams (bool force)
     if (latencyMayChange) refreshLatency();
     prevSnap = snap;
     haveSnap = true;
+}
+
+int ChannelStrip::rawQuality() const noexcept
+{
+    return std::clamp ((int) std::lround (values[(size_t) P::quality]->load (std::memory_order_relaxed)), 0, 1);
+}
+
+// Block start: moves the quality switch on. The new quality is applied when the output has faded out.
+void ChannelStrip::advanceQualityFade() noexcept
+{
+    switch (qualityFade)
+    {
+        case QualityFade::Steady:
+            if (rawQuality() != appliedQuality) { qualityFade = QualityFade::Down; qualityRamp = 0; }
+            break;
+        case QualityFade::Down:
+            if (qualityRamp >= qualityRampLen)
+            {
+                appliedQuality = rawQuality();
+                qualityFade = QualityFade::Hold;
+                qualityRamp = 0;
+            }
+            break;
+        case QualityFade::Hold:
+            if (qualityRamp >= qualityHoldLen) { qualityFade = QualityFade::Up; qualityRamp = 0; }
+            break;
+        case QualityFade::Up:
+            if (qualityRamp >= qualityRampLen) { qualityFade = QualityFade::Steady; qualityRamp = 0; }
+            break;
+    }
+}
+
+// Output stage: a raised-cosine fade (zero slope at both ends, so the spectrum of the dip stays low), on the
+// sample counter, so it does not depend on the host block size.
+void ChannelStrip::applyQualityFade (float* const* io, int numChannels, int n) noexcept
+{
+    if (qualityFade == QualityFade::Steady) return;
+    const double len = (double) qualityRampLen;
+    for (int i = 0; i < n; ++i)
+    {
+        const double t = std::min (1.0, (double) (qualityRamp + i) / len);
+        float g = 0.0f;
+        if (qualityFade == QualityFade::Down) g = (float) (0.5 + 0.5 * std::cos (juce::MathConstants<double>::pi * t));
+        else if (qualityFade == QualityFade::Up) g = (float) (0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * t));
+        for (int c = 0; c < numChannels; ++c) io[c][i] *= g;
+    }
+    qualityRamp += n;
 }
 
 void ChannelStrip::refreshLatency()
@@ -603,6 +656,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     jassert (n <= maxBlock);
     const auto tStart = juce::Time::getHighResolutionTicks();
     numChannels = juce::jlimit (1, 2, numChannels);
+    advanceQualityFade();
     updateParams (false);
     levelMatch.update (pi (P::matchMode), pv (P::matchTrim));
     if (const float db = levelMatch.gainDb(); db != lastMatchDb)
@@ -818,6 +872,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     if (! modW.isConstant() || modW.target() > 0.0f) applyModuleCompare (io, numChannels, n, clock.phase);
     if (! wholeW.isConstant() || wholeW.target() > 0.0f) applyWholeCompare (io, numChannels, n, clock.phase);
 
+    applyQualityFade (io, numChannels, n);
     if (numChannels == 2 && ! monitor.isIdentity()) monitor.process (io[0], io[1], n);
 
     // Output meters and sample stream.

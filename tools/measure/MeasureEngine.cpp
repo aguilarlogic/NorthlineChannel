@@ -1,4 +1,5 @@
 #include "Measure.h"
+#include "BenchTimer.h"
 #include <algorithm>
 #include <functional>
 
@@ -294,9 +295,10 @@ void determinismTable (MeasureReport& r, bool quick)
 void cpuTable (MeasureReport& r, bool quick)
 {
     r.h2 ("CPU cost of the strip stages (48 kHz, 64-sample blocks, stereo)");
-    r.para ("Processing time of `processBlock` with every module off unless stated, mean and 99th percentile per block. "
-            "Single run on a shared machine: noisy, use differences between rows only as an order of magnitude.");
-    r.table ({ "Configuration", "Mean (us/block)", "p99 (us/block)", "Real-time CPU (%)" });
+    r.para ("Thread CPU time of `processBlock` (QueryThreadCycleTime on Windows, so other processes do not count; the "
+            "harness's own work is measured and removed), per block, with every module off unless stated. The p99 is "
+            "wall time per block, so it includes pre-emption by other processes. One run per row.");
+    r.table ({ "Configuration", "CPU mean (us/block)", "wall p99 (us/block)", "CPU (%)" });
 
     const double seconds = quick ? 1.5 : 4.0;
     const int block = 64;
@@ -326,25 +328,16 @@ void cpuTable (MeasureReport& r, bool quick)
         juce::AudioBuffer<float> buf (2, block);
         juce::MidiBuffer midi;
         const int blocks = (int) (seconds * kFs / block), warm = (int) (0.5 * kFs / block);
-        std::vector<double> times;
-        times.reserve ((size_t) blocks);
-        const double tickUs = 1.0e6 / (double) juce::Time::getHighResolutionTicksPerSecond();
         int pos = 0;
-        for (int b = 0; b < blocks + warm; ++b)
+        const auto harness = [&] (int)
         {
             for (int c = 0; c < 2; ++c)
                 for (int i = 0; i < block; ++i) buf.setSample (c, i, src.getSample (c, (pos + i) % src.getNumSamples()));
             pos = (pos + block) % src.getNumSamples();
-            const auto t0 = juce::Time::getHighResolutionTicks();
-            p->processBlock (buf, midi);
-            const auto t1 = juce::Time::getHighResolutionTicks();
-            if (b >= warm) times.push_back ((double) (t1 - t0) * tickUs);
-        }
-        double sum = 0.0;
-        for (double t : times) sum += t;
-        std::sort (times.begin(), times.end());
-        const double mean = sum / (double) times.size(), p99 = times[(size_t) (0.99 * (double) (times.size() - 1))];
-        r.row ({ cfg.name, fmt (mean, 2), fmt (p99, 2), fmt (100.0 * mean / (1.0e6 * block / kFs), 3) });
+        };
+        const auto body = [&] (int) { p->processBlock (buf, midi); };
+        const auto t = timeBlocks (warm, blocks, block / kFs, body, harness);
+        r.row ({ cfg.name, fmt (t.cpuUsPerBlock, 2), fmt (t.wallP99Us, 2), fmt (100.0 * t.cpuUsPerBlock / (1.0e6 * block / kFs), 3) });
     }
     r.endTable();
 }
