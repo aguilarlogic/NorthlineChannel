@@ -85,6 +85,22 @@ public:
     void setForceFullParamUpdates (bool on) noexcept { forceFull.store (on); }
     static int maxModuleLatency (double sampleRate) noexcept { return (int) std::ceil (0.020 * sampleRate) + 1024; }
 
+    //==============================================================================
+    // Compare and Delta (roadmap 9.3). Transient: never saved, reset when a state loads. Written from the
+    // message thread, read by the audio thread once per block.
+    //  Compare target: -1 off, 0 the whole strip (the input, latency-aligned, replaces the output), or
+    //                  1 + moduleId, which bypasses that module with its learned level added back.
+    //  Delta: PRE, GATE and EQ output minus its latency-aligned input. DE-ESS and COMP have their own
+    //         Delta listen mode, which the processor sets, so setDelta ignores them here.
+    void setCompare (int target) noexcept { compareTarget.store (std::clamp (target, -1, (int) numModules)); }
+    int getCompare() const noexcept { return compareTarget.load (std::memory_order_relaxed); }
+    void setDelta (int moduleId, bool on) noexcept;
+    bool getDelta (int moduleId) const noexcept;
+
+    // Gain reduction as the meters show it, for the Instance Hub: 0 gate, 1 de-ess band 1, 2 de-ess
+    // band 2, 3 largest dynamic EQ band, 4 compressor, 5 limiter. Updated once per block.
+    float getHubGrDb (int index) const noexcept { return hubGr[(size_t) index].load (std::memory_order_relaxed); }
+
 private:
     float pv (int index) const noexcept { return snap.f (index); }
     bool pb (int index) const noexcept { return snap.on (index); }
@@ -99,6 +115,13 @@ private:
     void inputStage (float* const* io, int numChannels, int n);
     void matchStage (float* const* io, int numChannels, int n);
     void mixStage (float* const* io, int numChannels, int n);
+
+    // Compare / Delta (9.3).
+    struct ModuleLearn { float ew = 0.0f, ed = 0.0f, gainLin = 1.0f; }; // smoothed energy wet and dry, learned wet/dry level
+    void learnModule (int id, const float* const* wet, const float* const* dry, int numChannels, int n, uint32_t phase) noexcept;
+    void applyDelta (int id, float* const* io, const float* const* dry, int numChannels, int n, uint32_t phase) noexcept;
+    void applyWholeCompare (float* const* io, int numChannels, int n, uint32_t phase) noexcept;
+    void applyModuleCompare (float* const* io, int numChannels, int n, uint32_t phase) noexcept;
 
     //==============================================================================
     struct Monitor
@@ -161,5 +184,17 @@ private:
     std::atomic<bool> streamSamples { false };
     std::array<float, 6> moduleUsSmoothed {};
     double ticksToUs = 1.0;
+
+    // Compare and Delta state.
+    std::atomic<int> compareTarget { -1 }, deltaMask { 0 };
+    int lastCompareTarget = -1;                  // audio thread
+    RampedValue wholeW, modW, modGainV;          // compare weights and the bypassed module's learned gain
+    RampedValue deltaW[numModules];              // Delta weights (PRE, GATE, EQ)
+    RampedGain cmpOutGain;                       // output gain for the whole-strip bypass path
+    DelayLine cmpDelay;                          // input stage output delayed by the total latency
+    std::vector<float> cmpBuf[2], dryScratch[2], modGainBuf;
+    ModuleLearn learn[numModules];
+    float learnAlpha = 0.0f;
+    std::array<std::atomic<float>, 6> hubGr {};  // read by the Instance Hub
 };
 } // namespace nl
