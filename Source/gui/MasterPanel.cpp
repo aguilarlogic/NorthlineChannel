@@ -46,13 +46,18 @@ MasterPanel::MasterPanel (NorthlineProcessor& p) : proc (p)
         targetBox.addItem (loudness::kTargets[i].name + juce::String (i == loudness::kCustomTarget ? "" : "  " + juce::String (loudness::kTargets[i].integratedLufs, 0) + " LUFS / "
                                                                        + juce::String (loudness::kTargets[i].truePeakDb, 0) + " dBTP"),
                            i + 1);
+    {
+        const auto [savedIndex, savedCustom] = proc.getLoudnessTarget();
+        targetIndex = juce::jlimit (0, loudness::kNumTargets - 1, savedIndex);
+        customLufs = loudness::clampCustom (savedCustom);
+    }
     targetBox.setSelectedId (targetIndex + 1, juce::dontSendNotification);
     targetBox.setTooltip ("Loudness target: integrated loudness and true-peak ceiling");
     targetBox.onChange = [this] { selectTarget (targetBox.getSelectedId() - 1); };
     customDown.setTooltip ("Custom target: down 0.5 LU");
     customUp.setTooltip ("Custom target: up 0.5 LU");
-    customDown.onClick = [this] { customLufs = loudness::clampCustom (customLufs - loudness::kCustomStepLu); };
-    customUp.onClick = [this] { customLufs = loudness::clampCustom (customLufs + loudness::kCustomStepLu); };
+    customDown.onClick = [this] { customLufs = loudness::clampCustom (customLufs - loudness::kCustomStepLu); proc.setLoudnessTarget (targetIndex, customLufs); };
+    customUp.onClick = [this] { customLufs = loudness::clampCustom (customLufs + loudness::kCustomStepLu); proc.setLoudnessTarget (targetIndex, customLufs); };
     resetButton.setTooltip ("Reset integrated loudness, LRA, maxima and the overs counter");
     resetButton.onClick = [this] { proc.getStrip().meterHub().resetIntegrated(); };
     optionsButton.setTooltip ("Loudness integration options");
@@ -225,6 +230,7 @@ void MasterPanel::setTarget (int index, double customTargetLufs)
 void MasterPanel::selectTarget (int index)
 {
     targetIndex = juce::jlimit (0, loudness::kNumTargets - 1, index);
+    proc.setLoudnessTarget (targetIndex, customLufs);
     resized();
     repaint();
 }

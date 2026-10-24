@@ -518,7 +518,7 @@ void Knob::mouseDrag (const juce::MouseEvent& e)
     updateBubble();
 }
 
-void Knob::mouseUp (const juce::MouseEvent& e)
+void Knob::mouseUp (const juce::MouseEvent&)
 {
     if (! dragging) return;
     dragging = false;

@@ -57,7 +57,8 @@ bool isTransientId (const juce::String& id)
 bool isMetaProperty (const juce::String& name)
 {
     return name == "order" || name == "focus" || name == "presetName" || name == "slot" || name == "uiScale"
-           || name == "activeSlot" || name == "stateVersion" || name == "version" || name == "name";
+           || name == "activeSlot" || name == "stateVersion" || name == "version" || name == "name"
+           || name == "loudTarget" || name == "loudCustom" || name == "loudPause" || name == "loudResetOnPlay";
 }
 
 // v1 -> v2: renamed or re-meant parameters, by their v1 IDs.
@@ -272,6 +273,10 @@ void NorthlineProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty ("focus", focusToString (focus), nullptr);
         state.setProperty ("presetName", presetName, nullptr);
         state.setProperty ("uiScale", uiScale, nullptr);
+        state.setProperty ("loudTarget", loudnessTarget, nullptr);
+        state.setProperty ("loudCustom", loudnessCustomLufs, nullptr);
+        state.setProperty ("loudPause", strip.meterHub().pauseIntegrationWhenStopped(), nullptr);
+        state.setProperty ("loudResetOnPlay", strip.meterHub().resetIntegrationOnPlay(), nullptr);
         state.setProperty ("activeSlot", activeSlot, nullptr);
         state.setProperty ("stateVersion", kStateVersion, nullptr);
 
@@ -308,6 +313,10 @@ void NorthlineProcessor::setStateInformation (const void* data, int sizeInBytes)
         focus = focusFromString (tree.getProperty ("focus").toString());
         presetName = tree.getProperty ("presetName", "Init").toString();
         uiScale = (float) tree.getProperty ("uiScale", 1.0f);
+        loudnessTarget = (int) tree.getProperty ("loudTarget", 0);
+        loudnessCustomLufs = (double) tree.getProperty ("loudCustom", -14.0);
+        strip.meterHub().setPauseIntegrationWhenStopped ((bool) tree.getProperty ("loudPause", false));
+        strip.meterHub().setResetIntegrationOnPlay ((bool) tree.getProperty ("loudResetOnPlay", false));
         activeSlot = juce::jlimit (0, 1, (int) tree.getProperty ("activeSlot", 0));
 
         if (auto ab = tree.getChildWithName ("AB"); ab.isValid())
@@ -588,6 +597,19 @@ void NorthlineProcessor::setUiScale (float s)
 {
     const juce::ScopedLock sl (stateLock);
     uiScale = s;
+}
+
+std::pair<int, double> NorthlineProcessor::getLoudnessTarget() const
+{
+    const juce::ScopedLock sl (stateLock);
+    return { loudnessTarget, loudnessCustomLufs };
+}
+
+void NorthlineProcessor::setLoudnessTarget (int index, double customLufs)
+{
+    const juce::ScopedLock sl (stateLock);
+    loudnessTarget = index;
+    loudnessCustomLufs = customLufs;
 }
 
 void NorthlineProcessor::applyValues (const std::vector<std::pair<int, float>>& values)

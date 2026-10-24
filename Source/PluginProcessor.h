@@ -115,6 +115,11 @@ public:
     float getUiScale() const;
     void setUiScale (float s);
 
+    // Loudness target shown in the master column (index into loudness::kTargets, custom LUFS).
+    // Saved with the session, like the MeterHub integration options.
+    std::pair<int, double> getLoudnessTarget() const;
+    void setLoudnessTarget (int index, double customLufs);
+
     // Level Match (D1). Relearn restarts a Learn pass (or the Live tracking).
     void relearnLevelMatch() { strip.relearnLevelMatch(); }
     LevelMatchStatus getLevelMatchStatus() const noexcept { return strip.getLevelMatchStatus(); }
@@ -159,6 +164,8 @@ private:
     juce::String presetName { "Init" };
     std::vector<int> focus;
     float uiScale = 1.0f;
+    int loudnessTarget = 0;
+    double loudnessCustomLufs = -14.0;
 
     // Smart Start, Instance Hub (message thread state, except cpuPercent and the capture buffer).
     smart::SmartStart smartStart;

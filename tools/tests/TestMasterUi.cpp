@@ -61,7 +61,7 @@ NL_TEST (masterUi_levelMatchStatusText)
     s.state = LevelMatchStatus::Live;
     s.gainDb = -0.4f;
     check (levelmatch::text (s) == "Live -0.4 dB", "Level Match live shows the applied gain", levelmatch::text (s));
-    check (levelMatchColour (LevelMatchStatus::Learning) == colours::pre, "Level Match is amber while learning");
+    check (levelMatchColour (LevelMatchStatus::Learning) == colours::amber, "Level Match is amber while learning");
     check (levelMatchColour (LevelMatchStatus::Learning) != colours::meterRed, "...and never red");
 }
 

@@ -15,7 +15,7 @@ juce::Colour levelMatchColour (LevelMatchStatus::State state)
 {
     switch (state)
     {
-        case LevelMatchStatus::Learning: return colours::pre; // amber: a transient state
+        case LevelMatchStatus::Learning: return colours::amber; // a transient state
         case LevelMatchStatus::Learned: return colours::meterGreen;
         case LevelMatchStatus::Live: return colours::text;
         case LevelMatchStatus::Idle:
@@ -28,7 +28,7 @@ juce::Colour loudnessStatusColour (loudness::Status status)
     switch (status)
     {
         case loudness::Status::OnTarget: return colours::meterGreen;
-        case loudness::Status::OffTarget: return colours::pre; // amber
+        case loudness::Status::OffTarget: return colours::amber;
         case loudness::Status::NoReading:
         default: return colours::dim;
     }
@@ -349,7 +349,7 @@ void LevelMatchView::paint (juce::Graphics& g)
     g.fillRoundedRectangle (bar, 2.0f);
     if (status.state == LevelMatchStatus::Learning)
     {
-        g.setColour (colours::pre);
+        g.setColour (colours::amber);
         g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * juce::jlimit (0.0f, 1.0f, status.progress)), 2.0f);
     }
     else if (status.state == LevelMatchStatus::Live || status.state == LevelMatchStatus::Learned)
