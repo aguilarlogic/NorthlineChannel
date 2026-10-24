@@ -7,6 +7,10 @@
 
 namespace nl
 {
+// "Comp Threshold -18 -> -22 dB" in the typeset form (U+2212 minus, U+2192 arrow); the unit is
+// written once when both values share it. Choice and bool parameters read "HP On: Off -> On".
+juce::String undoLabelForParam (int paramIndex, float oldPlain, float newPlain);
+
 class NorthlineProcessor : public juce::AudioProcessor,
                            private juce::AudioProcessorParameter::Listener,
                            private juce::AsyncUpdater,
@@ -52,7 +56,7 @@ public:
 
     // Module order (message thread).
     ChannelStrip::Order getOrder() const { return strip.getOrder(); }
-    void setOrder (const ChannelStrip::Order& order, bool recordUndo = true);
+    void setOrder (const ChannelStrip::Order& order, bool recordUndo = true, const juce::String& undoLabel = {});
     void moveModule (int moduleId, int delta);
 
     // Snapshots used by undo, A/B and presets. They never contain transient parameters
@@ -60,12 +64,30 @@ public:
     juce::ValueTree makeSnapshot() const;
     void applySnapshot (const juce::ValueTree& snapshot);
 
-    // Undo / redo (32 levels, includes module order).
-    void pushUndoSnapshot();
+    // Undo / redo (32 levels, includes module order). Every entry has a label such as
+    // "Comp Threshold -18 -> -22 dB" (see undoLabelForParam), taken from the gesture, preset,
+    // A/B, reorder or reset that made it.
+    void pushUndoSnapshot (const juce::String& label = {});
     bool canUndo() const;
     bool canRedo() const;
     void undo();
     void redo();
+    // The timeline runs from the oldest state to the newest. getUndoHistory() ends at the current
+    // state (its last label is the change that produced it); getRedoHistory() lists the states after
+    // it, next first. undoTo() takes an index into the two lists joined (undo part first).
+    std::vector<juce::String> getUndoHistory() const;
+    std::vector<juce::String> getRedoHistory() const;
+    void undoTo (int timelineIndex);
+    // Pushes the label of a finished gesture now instead of at the next message loop turn (tests, offline tools).
+    void flushPendingUndo() { handleAsyncUpdate(); }
+
+    // Module presets: one module's parameters, never transient ones. Module ids are ModuleId.
+    // Module presets travel as XML: files (*.nlmodule) and the clipboard.
+    static int moduleOfParam (int paramIndex); // ModuleId, or -1 for master parameters
+    juce::String getModuleXml (int moduleId, const juce::String& name = {}) const;
+    bool saveModulePreset (const juce::File& file, int moduleId, const juce::String& name);
+    bool loadModulePreset (const juce::File& file);  // the module comes from the file
+    bool pasteModuleXml (const juce::String& xml);   // false when the text is not a module preset
 
     // A/B compare.
     int getActiveSlot() const;
@@ -74,7 +96,7 @@ public:
 
     // Presets. Loading a preset (or resetting) also resets the transient parameters.
     void loadFactoryPreset (int index);
-    bool saveUserPreset (const juce::File& file, const juce::String& name);
+    bool saveUserPreset (const juce::File& file, const juce::String& name, const PresetMeta& meta = {});
     bool loadUserPreset (const juce::File& file);
     void resetToDefaults();
 
@@ -145,6 +167,7 @@ private:
     void handleAsyncUpdate() override;
     void timerCallback() override;
     void applyValues (const std::vector<std::pair<int, float>>& values);
+    void applyParamsAsOneStep (const std::vector<std::pair<int, float>>& values, const juce::String& label);
     void resetTransientParams();
     void afterWholeStateLoad();
     void writeParameter (int index, float plain);
@@ -158,6 +181,10 @@ private:
     // Non-parameter state. Guarded by stateLock, which the audio thread never takes.
     mutable juce::CriticalSection stateLock;
     std::vector<juce::ValueTree> undoStack;
+    std::vector<juce::String> undoLabels; // parallel to undoStack
+    juce::String pendingUndoLabel;        // label for the async push of a finished gesture
+    int gestureParam = -1;                // parameter of the gesture in progress (message thread)
+    float gestureStartPlain = 0.0f;
     int undoPos = -1;
     juce::ValueTree slots[2];
     int activeSlot = 0;
