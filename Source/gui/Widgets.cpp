@@ -10,7 +10,7 @@ namespace
 juce::String normaliseEntry (const juce::String& text)
 {
     auto s = text.removeCharacters (" \t\r\n").toLowerCase();
-    s = s.replace (juce::String::fromUTF8 ("\xe2\x88\x92"), "-"); // Unicode minus
+    s = s.replaceCharacter ((juce::juce_wchar) 0x2212, (juce::juce_wchar) '-'); // Unicode minus sign
     return s;
 }
 
@@ -177,6 +177,12 @@ const SuffixHelp kSuffixHelp[] {
     { "_mix", "Blend between the processed and the dry signal." },
 };
 } // namespace
+
+juce::String shortDescription (int paramIndex)
+{
+    const auto help = helpText (paramIndex);
+    return help.isNotEmpty() ? help : juce::String (paramDef (paramIndex).name) + " setting";
+}
 
 juce::String helpText (int paramIndex)
 {
@@ -408,7 +414,7 @@ Knob::Knob (NorthlineProcessor& p, int paramIndex, const juce::String& text, juc
 {
     setWantsKeyboardFocus (true);
     setTitle (paramDef (paramIndex).name);
-    setDescription (ui::helpText (paramIndex));
+    setDescription (ui::shortDescription (paramIndex));
     setTooltip (ui::tooltipText (paramIndex));
     binding.sendInitialUpdate();
 }
@@ -620,7 +626,7 @@ Chip::Chip (NorthlineProcessor& p, int paramIndex, const juce::String& text, juc
     onClick = [this] { binding.setPlainAsGesture (getToggleState() ? 1.0f : 0.0f); };
     setToggleState (binding.plain() >= 0.5f, juce::dontSendNotification);
     setTitle (paramDef (paramIndex).name);
-    setDescription (ui::helpText (paramIndex));
+    setDescription (ui::shortDescription (paramIndex));
     setTooltip (ui::tooltipText (paramIndex));
 }
 
@@ -658,7 +664,7 @@ ChoiceBox::ChoiceBox (NorthlineProcessor& p, int paramIndex)
     onChange = [this] { binding.setPlainAsGesture ((float) getSelectedItemIndex()); };
     setSelectedItemIndex (juce::roundToInt (binding.plain()), juce::dontSendNotification);
     setTitle (d.name);
-    setDescription (ui::helpText (paramIndex));
+    setDescription (ui::shortDescription (paramIndex));
     setTooltip (ui::tooltipText (paramIndex));
 }
 
@@ -747,7 +753,7 @@ Segmented::Segmented (NorthlineProcessor& p, int paramIndex, juce::Colour accent
         addAndMakeVisible (b);
     }
     setTitle (d.name);
-    setDescription (ui::helpText (paramIndex));
+    setDescription (ui::shortDescription (paramIndex));
     setTooltip (ui::tooltipText (paramIndex));
     binding.sendInitialUpdate();
 }

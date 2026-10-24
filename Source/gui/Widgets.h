@@ -43,6 +43,8 @@ float clampNormalised (float n);
 juce::String tooltipText (int paramIndex);
 // Just the description used by help mode and the tooltip.
 juce::String helpText (int paramIndex);
+// Accessibility description: the help text, or the parameter name when there is none.
+juce::String shortDescription (int paramIndex);
 
 // Help mode ("?" in the chain row): hovering a control shows its explanation.
 void setHelpMode (bool on);

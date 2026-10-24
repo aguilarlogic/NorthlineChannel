@@ -63,7 +63,7 @@ void UiSettings::setTheme (tokens::Theme t)
     if (props == nullptr || theme() == t) return;
     props->setValue ("theme", t == tokens::Theme::highContrast ? 1 : 0);
     store();
-    sendChangeMessage();
+    sendSynchronousChangeMessage();
 }
 
 bool UiSettings::consoleLayout() const { return props != nullptr && props->getBoolValue ("consoleLayout", false); }
@@ -73,7 +73,7 @@ void UiSettings::setConsoleLayout (bool on)
     if (props == nullptr || consoleLayout() == on) return;
     props->setValue ("consoleLayout", on);
     store();
-    sendChangeMessage();
+    sendSynchronousChangeMessage();
 }
 
 bool UiSettings::showCpu() const { return props != nullptr && props->getBoolValue ("showCpu", false); }
@@ -83,7 +83,7 @@ void UiSettings::setShowCpu (bool on)
     if (props == nullptr || showCpu() == on) return;
     props->setValue ("showCpu", on);
     store();
-    sendChangeMessage();
+    sendSynchronousChangeMessage();
 }
 
 float UiSettings::defaultScale() const
@@ -96,13 +96,13 @@ void UiSettings::setDefaultScale (float s)
     if (props == nullptr) return;
     props->setValue ("defaultScale", (double) clampScale (s));
     store();
-    sendChangeMessage();
+    sendSynchronousChangeMessage();
 }
 
 void UiSettings::applyDefaultScaleToAllInstances()
 {
     ++serial;
-    sendChangeMessage();
+    sendSynchronousChangeMessage();
 }
 
 int UiSettings::applyAllSerial() const { return serial; }
