@@ -72,6 +72,8 @@ public:
     // The per-module CPU readout in the footer. Off unless Settings -> Show CPU is on (roadmap 8.4).
     void setShowCpu (bool on);
     bool cpuFooterShown() const noexcept { return showCpu; }
+    // Re-reads this module's Compare and Delta state from the processor (they are transient, not parameters).
+    void refreshTransient();
     std::function<void (int moduleId, int delta)> onMove;
 
 protected:
@@ -134,6 +136,7 @@ private:
     std::unique_ptr<Chip> power;
     std::unique_ptr<Segmented> mode;
     juce::TextButton moveLeft { "<" }, moveRight { ">" };
+    juce::TextButton compareToggle, deltaToggle; // header: compare this module, delta listen (amber while on)
     juce::String cpuText;
     bool showCpu = false;
     std::unique_ptr<juce::ParameterAttachment> onWatcher;

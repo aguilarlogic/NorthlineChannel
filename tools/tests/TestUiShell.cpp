@@ -435,7 +435,7 @@ NL_TEST (ui_overlay_card_sizes)
     check (large.getWidth() == 1120 && large.getHeight() == 680, "large card is 1120 x 680 on the 1320 x 780 canvas",
            juce::String (large.getWidth()) + " x " + juce::String (large.getHeight()));
     check (medium.getWidth() == 640 && medium.getHeight() == 520, "medium card is 640 x 520");
-    check (compact.getWidth() == 560 && compact.getHeight() == 360, "compact card is 560 x 360");
+    check (compact.getWidth() == 560 && compact.getHeight() == 300, "compact card is 560 x 300");
     check (large.getCentre() == canvas.getCentre() && medium.getCentre() == canvas.getCentre(), "cards are centred on the canvas");
 
     // A smaller window: each card shrinks to the window less the margin, and stays centred.

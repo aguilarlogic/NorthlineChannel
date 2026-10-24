@@ -10,7 +10,7 @@ juce::Point<int> preferred (Size size)
 {
     switch (size)
     {
-        case Size::compact: return { 560, 360 };
+        case Size::compact: return { 560, 300 };
         case Size::medium: return { 640, 520 };
         case Size::large: return { 1120, 680 };
     }
@@ -98,7 +98,7 @@ void OverlayCard::paint (juce::Graphics& g)
     g.setColour (colours::panelHeader);
     g.fillPath (top);
     g.setColour (colours::edge);
-    g.drawHorizontalLine (card.getY() + overlay::kTitleH, card.getX(), card.getRight());
+    g.drawHorizontalLine ((int) (card.getY() + (float) overlay::kTitleH), card.getX(), card.getRight());
     g.drawRoundedRectangle (card.reduced (0.5f), radius, 1.0f);
 
     g.setColour (colours::text);

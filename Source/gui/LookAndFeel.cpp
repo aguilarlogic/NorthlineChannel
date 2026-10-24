@@ -288,7 +288,9 @@ void NorthlineLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, 
     const auto r = juce::Rectangle<float> (0, 0, (float) w, (float) h).reduced (0.5f);
     g.setColour (colours::track);
     g.fillRoundedRectangle (r, tokens::radius::control);
-    g.setColour ((bool) box.getProperties().getWithDefault ("focus", false) ? colours::focus : colours::controlEdge);
+    const bool focused = (bool) box.getProperties().getWithDefault ("focus", false);
+    const bool transientOn = (bool) box.getProperties().getWithDefault ("transient", false);
+    g.setColour (transientOn ? colours::amber : focused ? colours::focus : colours::controlEdge);
     g.drawRoundedRectangle (r, tokens::radius::control, 1.0f);
 
     juce::Path arrow;

@@ -136,7 +136,7 @@ void SmartStartPanel::timerCallback()
     {
         listenShowsBusy = busy;
         listenButton.setButtonText (busy ? "Cancel" : "Listen");
-        listenButton.setColour (juce::TextButton::buttonColourId, busy ? colours::focus : colours::track); // amber while listening
+        listenButton.setColour (juce::TextButton::buttonColourId, busy ? colours::amber : colours::track); // transient: amber while listening
         listenButton.setColour (juce::TextButton::textColourOffId, busy ? colours::background : colours::text);
     }
     status.setText (ss.statusText(), juce::dontSendNotification);

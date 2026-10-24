@@ -155,6 +155,7 @@ void NorthlineEditor::setScale (float s, bool storeInProcessor)
     overlayHolder.setTransform (transform);
     ui::setDisplayScale (s);
     if (storeInProcessor) proc.setUiScale (s); // a size set here is the instance's own choice
+    if (topBar != nullptr) { topBar->setShownScale (s); topBar->refresh(); } // the top bar shows the size at once
     setSize (juce::roundToInt (kBaseW * s), juce::roundToInt (kBaseH * s));
 }
 
@@ -481,6 +482,10 @@ void NorthlineEditor::housekeeping()
 {
     if (topBar == nullptr) return;
     syncPanelActivity();
+
+    // Compare and Delta are transient (not parameters): re-read them a few times a second.
+    topBar->refreshTransient();
+    for (auto& p : panels) if (p != nullptr) p->refreshTransient();
 
     // Whole-state changes (presets, undo, A/B, host state restore).
     const int gen = proc.stateGeneration.load();

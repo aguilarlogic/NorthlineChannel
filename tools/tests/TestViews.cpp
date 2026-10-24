@@ -3,6 +3,9 @@
 #include "gui/EqView.h"
 #include "gui/ModulePanels.h"
 #include "gui/ViewUtil.h"
+#include "gui/Transient.h"
+#include "gui/Widgets.h"
+#include "dsp/EqModule.h"
 
 // Module views (ROADMAP 8.4 and 8.5): scope taps, analyser maths and threads, EQ handle mapping, the
 // sidechain and transient buttons, and the panel layout at the detail and console sizes.
@@ -285,7 +288,7 @@ NL_TEST (views_param_button_toggles_transient)
 {
     auto proc = tool::makeProc();
     ParamButton band2 (*proc, P::dsListen, 2, "BAND 2");
-    check (band2.findColour (juce::TextButton::buttonOnColourId) == colours::pre, "listen button: lit in amber");
+    check (band2.findColour (juce::TextButton::buttonOnColourId) == colours::amber, "listen button: lit in amber (transient)");
     band2.onClick();
     check (view::plain (*proc, P::dsListen) > 1.5f && view::plain (*proc, P::dsListen) < 2.5f, "listen button: a click selects band 2");
     band2.onClick();
@@ -475,4 +478,101 @@ NL_TEST (views_render_panels)
     }
     for (auto& p : panels) p->setActive (false);
     check (true, "render: panels written to " + dir.getFullPathName());
+}
+
+//==============================================================================
+// Transient controls (wave 3): Compare, Delta and the EQ Q rule. The rules are pure and the processor calls check
+// the button-to-API mapping end to end.
+
+NL_TEST (views_compare_target_mapping)
+{
+    using namespace nl::transient;
+    check (kCompareOff == -1 && kCompareStrip == 0, "compare: off is -1, the whole strip is 0");
+    check (moduleCompareTarget (modPre) == 1 && moduleCompareTarget (modComp) == 1 + modComp, "compare: a module's target is 1 + its id");
+    check (toggleModuleCompare (kCompareOff, modEq) == moduleCompareTarget (modEq), "module compare: from off, asks for that module");
+    check (toggleModuleCompare (moduleCompareTarget (modEq), modEq) == kCompareOff, "module compare: a second press turns it off");
+    check (toggleModuleCompare (kCompareStrip, modEq) == moduleCompareTarget (modEq), "module compare: replaces the whole-strip compare");
+    check (toggleModuleCompare (moduleCompareTarget (modGate), modEq) == moduleCompareTarget (modEq), "module compare: replaces another module's");
+}
+
+NL_TEST (views_compare_hold_latch)
+{
+    using namespace nl::transient;
+    CompareHold h;
+    check (h.press (false) == kCompareStrip, "compare hold: pressing compares the whole strip");
+    check (h.release() == kCompareOff, "compare hold: releasing goes back");
+    check (h.press (true) == kCompareStrip && h.isLatched(), "compare latch: Shift-press latches it on");
+    check (h.release() == kCompareStrip, "compare latch: releasing keeps it on");
+    check (h.press (false) == kCompareOff && ! h.isLatched(), "compare latch: a plain click lets it go");
+    check (h.release() == kCompareOff, "compare latch: off after the click");
+    check (h.press (true) == kCompareStrip, "compare latch: Shift-press latches again");
+    check (h.press (true) == kCompareOff, "compare latch: a second Shift-press unlatches");
+    check (h.release() == kCompareOff, "compare latch: off after unlatching");
+}
+
+NL_TEST (views_compare_delta_api_mapping)
+{
+    auto proc = tool::makeProc();
+    proc->setCompare (nl::transient::moduleCompareTarget (modEq));
+    check (proc->getCompare() == 1 + modEq, "compare API: a module target round-trips");
+    proc->setCompare (nl::transient::kCompareStrip);
+    check (proc->getCompare() == nl::transient::kCompareStrip, "compare API: the whole strip round-trips");
+    proc->setCompare (nl::transient::kCompareOff);
+    check (proc->getCompare() == nl::transient::kCompareOff, "compare API: off round-trips");
+
+    proc->setDelta (modDs, true);
+    check (proc->getDelta (modDs) && juce::roundToInt (view::plain (*proc, P::dsListen)) == 3, "delta API: DE-ESS Delta is its listen mode 3");
+    proc->setDelta (modDs, false);
+    check (! proc->getDelta (modDs), "delta API: DE-ESS Delta turns off");
+    proc->setDelta (modComp, true);
+    check (proc->getDelta (modComp) && juce::roundToInt (view::plain (*proc, P::compListen)) == 2, "delta API: COMP Delta is its listen mode 2");
+    proc->setDelta (modComp, false);
+    check (! proc->getDelta (modComp), "delta API: COMP Delta turns off");
+    proc->setDelta (modEq, true);
+    check (proc->getDelta (modEq), "delta API: other modules run Delta in the strip");
+    proc->setDelta (modEq, false);
+    check (! proc->getDelta (modEq), "delta API: the strip Delta turns off");
+}
+
+NL_TEST (views_eq_q_only_for_bell_types)
+{
+    // The Q knob is live only for the band types whose kind takes the band's Q (EqModule::kindOf). Shelves and Wide /
+    // Narrow set their own width, so their base Q does not move with the knob.
+    int mismatches = 0, cases = 0;
+    for (int band = 0; band < 4; ++band)
+    {
+        const auto& choices = paramDef (P::eqLowOn + band * P::kEqBandStride + 1).choices;
+        mismatches += (int) choices.size() != 3;
+        for (int type = 0; type < 3; ++type)
+        {
+            const bool kindUsesQ = EqModule::kindOf (band, type, 0.5f).baseQ != EqModule::kindOf (band, type, 3.0f).baseQ;
+            mismatches += kindUsesQ != nl::transient::eqBandUsesQ (type);
+            ++cases;
+        }
+    }
+    check (mismatches == 0, "eq Q: the Q knob is live exactly for the band types that use Q", juce::String (cases) + " band types");
+    check (! nl::transient::eqBandUsesQ (0) && ! nl::transient::eqBandUsesQ (1) && nl::transient::eqBandUsesQ (2),
+           "eq Q: Shelf, Wide and Narrow ignore Q; Bell and Param use it");
+}
+
+NL_TEST (views_knob_inert_and_monitor_look)
+{
+    auto proc = tool::makeProc();
+    Knob q (*proc, P::eqLowOn + 4, "Q", colours::eq);
+    check (! q.isInert(), "knob: a Q knob starts live");
+    q.setInert (true);
+    check (q.isInert(), "knob: setInert dims it and blocks edits");
+    q.setInert (false);
+    check (! q.isInert(), "knob: setInert(false) makes it live again");
+
+    // The monitor mode is transient: its outline is amber away from Stereo (choice 0) and plain at Stereo.
+    ChoiceBox monitor (*proc, P::monitor);
+    const auto& choices = paramDef (P::monitor).choices;
+    const float step = 1.0f / (float) (choices.size() - 1);
+    proc->param (P::monitor)->setValueNotifyingHost (step);
+    monitor.updateTransientLook();
+    check (monitor.getProperties().getWithDefault ("transient", false), "monitor: away from Stereo the outline is amber");
+    proc->param (P::monitor)->setValueNotifyingHost (0.0f);
+    monitor.updateTransientLook();
+    check (! monitor.getProperties().getWithDefault ("transient", false), "monitor: back at Stereo the outline is plain");
 }

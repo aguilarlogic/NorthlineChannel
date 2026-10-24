@@ -431,7 +431,7 @@ void Knob::resized()
 
 void Knob::paint (juce::Graphics& g)
 {
-    const bool on = isEnabled();
+    const bool on = isEnabled() && ! inert;
     auto area = getLocalBounds();
     auto top = area.removeFromTop (14);
     auto bottom = area.removeFromBottom (14);
@@ -464,6 +464,13 @@ void Knob::setFocusState (bool highlighted, bool dimmed)
     repaint();
 }
 
+void Knob::setInert (bool shouldBeInert)
+{
+    if (inert == shouldBeInert) return;
+    inert = shouldBeInert;
+    repaint();
+}
+
 void Knob::updateBubble()
 {
     const bool show = dragging || hovered || hasKeyboardFocus (false);
@@ -488,7 +495,7 @@ void Knob::mouseExit (const juce::MouseEvent&)
 
 void Knob::mouseDown (const juce::MouseEvent& e)
 {
-    if (! isEnabled()) return;
+    if (! isEnabled() || inert) return;
     grabKeyboardFocus();
     if (e.mods.isPopupMenu())
     {
@@ -531,7 +538,7 @@ void Knob::mouseUp (const juce::MouseEvent&)
 
 void Knob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
-    if (! isEnabled()) return;
+    if (! isEnabled() || inert) return;
     const float d = std::abs (w.deltaY) > std::abs (w.deltaX) ? w.deltaY : w.deltaX;
     if (std::abs (d) < 1.0e-6f) return;
     binding.wheelStep (ui::wheelDelta (d, e.mods.isShiftDown()));
@@ -540,7 +547,7 @@ void Knob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDeta
 
 bool Knob::keyPressed (const juce::KeyPress& key)
 {
-    if (! isEnabled()) return false;
+    if (! isEnabled() || inert) return false;
     const int code = key.getKeyCode();
     const bool shift = key.getModifiers().isShiftDown();
     if (code == juce::KeyPress::returnKey)
@@ -659,19 +666,29 @@ void Chip::mouseDown (const juce::MouseEvent& e)
 
 //==============================================================================
 ChoiceBox::ChoiceBox (NorthlineProcessor& p, int paramIndex)
-    : binding (p, paramIndex, [this] { setSelectedItemIndex (juce::roundToInt (binding.plain()), juce::dontSendNotification); })
+    : binding (p, paramIndex, [this] { setSelectedItemIndex (juce::roundToInt (binding.plain()), juce::dontSendNotification); updateTransientLook(); })
 {
     const auto& d = paramDef (paramIndex);
     int id = 1;
     for (auto* c : d.choices) addItem (c, id++);
     onChange = [this] { binding.setPlainAsGesture ((float) getSelectedItemIndex()); };
     setSelectedItemIndex (juce::roundToInt (binding.plain()), juce::dontSendNotification);
+    updateTransientLook();
     setTitle (d.name);
     setDescription (ui::shortDescription (paramIndex));
     setTooltip (ui::tooltipText (paramIndex));
 }
 
 ChoiceBox::~ChoiceBox() = default;
+
+void ChoiceBox::updateTransientLook()
+{
+    // A transient choice (the monitor mode) away from its default is a live monitoring aid: its outline is amber while it is.
+    const bool away = isTransient (binding.index()) && juce::roundToInt (binding.plain()) != 0;
+    if ((bool) getProperties().getWithDefault ("transient", false) == away) return;
+    getProperties().set ("transient", away);
+    repaint();
+}
 
 void ChoiceBox::setFocusState (bool highlighted, bool dimmed)
 {
