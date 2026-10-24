@@ -8,6 +8,7 @@ on:
 
 env:
   JUCE_TAG: "9.0.3"
+  PLUGINVAL_VERSION: "v1.0.4"
 
 jobs:
   windows:
@@ -32,6 +33,20 @@ jobs:
         shell: bash
         run: build/NorthlineTool_artefacts/Release/NorthlineTool.exe test
 
+      # In-process validator on the built VST3 (roadmap 11.2): exit code 1 on any FAIL.
+      - name: Validate (NorthlineTool validate)
+        shell: bash
+        run: build/NorthlineTool_artefacts/Release/NorthlineTool.exe validate "build/NorthlineChannel_artefacts/Release/VST3/Northline Channel.vst3"
+
+      # Mirrors release.yml (Windows, x64): pluginval at strictness 10, in process.
+      - name: pluginval (strictness 10)
+        shell: bash
+        run: |
+          curl -sL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_Windows.zip"
+          7z x pluginval.zip -opluginval
+          ./pluginval/pluginval.exe --strictness-level 10 --validate-in-process --output-dir pluginval-logs \
+            --validate "build/NorthlineChannel_artefacts/Release/VST3/Northline Channel.vst3"
+
       - name: Upload artefacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -40,6 +55,7 @@ jobs:
           path: |
             build/NorthlineChannel_artefacts/Release/VST3/
             build/NorthlineTool_artefacts/Release/NorthlineTool.exe
+            pluginval-logs/
           if-no-files-found: warn
 
   macos:

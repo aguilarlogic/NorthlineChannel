@@ -28,6 +28,8 @@ void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
 
 namespace tool
 {
+int runValidate (const juce::StringArray& args); // Validate.cpp
+
 // Renders the editor off-screen after feeding it ~2 s of program material, so the
 // GUI can be checked (construction, layout, meters) without a DAW.
 static int snapshot (const juce::File& file, int preset, const juce::String& overlay)
@@ -99,6 +101,7 @@ int main (int argc, char* argv[])
     if (cmd == "test") return tool::runTests (args);
     if (cmd == "measure") return tool::runMeasure (args);
     if (cmd == "bench" || cmd == "host-bench") return tool::runBench (args);
+    if (cmd == "validate") return tool::runValidate (args);
     if (cmd == "snapshot" && args.size() > 1)
         return tool::snapshot (juce::File::getCurrentWorkingDirectory().getChildFile (args[1]), args.size() > 2 ? args[2].getIntValue() : 1, args[3]);
 
@@ -109,6 +112,10 @@ int main (int argc, char* argv[])
                  "  bench [--quick]              CPU benchmark of Northline Channel (in-process)\n"
                  "  host-bench <file.vst3> [name-filter] [--quick]\n"
                  "                               load any VST3 (e.g. a competitor strip) and benchmark it the same way\n"
+                 "  validate [file.vst3] [--quick] [--seed N]\n"
+                 "                               pluginval-style checks (editor, rates x blocks x layouts, fuzz, silence,\n"
+                 "                               state, latency, bypass, threads, audio-thread allocations) on the\n"
+                 "                               in-process processor, or on the given VST3 through JUCE hosting\n"
                  "  snapshot <out.png> [preset] [browser|smart|hub|settings]\n"
                  "                               render the editor to a PNG (factory preset index, -1 = everything on),\n"
                  "                               optionally with an overlay open\n");
