@@ -94,6 +94,16 @@ target_link_libraries(NorthlineTool
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
 
+# Inter (SIL Open Font License). Put Inter-Regular.ttf and Inter-Bold.ttf in Resources/fonts/ and
+# re-run CMake; LookAndFeel.cpp picks them up through NorthlineFontData.h. Without them it falls back
+# to the system font.
+file(GLOB NL_INTER_FONTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/fonts/Inter-*.ttf")
+if(NL_INTER_FONTS)
+    juce_add_binary_data(NorthlineFonts HEADER_NAME NorthlineFontData.h NAMESPACE NorthlineFonts SOURCES ${NL_INTER_FONTS})
+    target_link_libraries(NorthlineChannel PRIVATE NorthlineFonts)
+    target_link_libraries(NorthlineTool PRIVATE NorthlineFonts)
+endif()
+
 # AddressSanitizer for the test tool (MSVC): configure a separate build directory with -DNL_ASAN=ON, e.g.
 #   cmake -S . -B build-asan -DNL_ASAN=ON
 # The sanitizer needs frame pointers (/Oy-), debug information for the reports (/Zi) and no incremental
