@@ -2,6 +2,7 @@
 #include "BenchTimer.h"
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -269,16 +270,73 @@ int runStages()
     return 0;
 }
 
-int runDump (const juce::String& path)
+// A named reference case: renders its output (channel 0 for PRE, both channels for the strip) on demand.
+struct Named
 {
-    const auto cases = buildCases();
+    std::string name;
+    std::function<std::vector<float>()> render;
+};
+
+// Strip reference: the whole plug-in (both channels, 64-sample blocks, 0.5 s of pink noise) for a few factory
+// presets, the default state, and the everything-on configurations in both qualities.
+std::vector<Named> stripCases()
+{
+    std::vector<Named> cs;
+    auto strip = [] (int preset, int everything)
+    {
+        return [preset, everything]
+        {
+            NorthlineProcessor p;
+            if (preset >= 0) p.loadFactoryPreset (preset);
+            if (everything >= 0) configureEverything (p, everything == 1, everything == 1);
+            const int block = kBlock;
+            const size_t n = 24000;
+            p.setRateAndBufferSizeDetails (kFs, block);
+            p.prepareToPlay (kFs, block);
+            const auto src = signalOf (0, n);
+            std::vector<float> out (2 * n, 0.0f);
+            juce::AudioBuffer<float> buf (2, block);
+            juce::MidiBuffer midi;
+            for (size_t pos = 0; pos + (size_t) block <= n; pos += (size_t) block)
+            {
+                buf.copyFrom (0, 0, src.data() + pos, block);
+                buf.copyFrom (1, 0, src.data() + pos, block);
+                p.processBlock (buf, midi);
+                for (int i = 0; i < block; ++i)
+                {
+                    out[pos + (size_t) i] = buf.getSample (0, i);
+                    out[n + pos + (size_t) i] = buf.getSample (1, i);
+                }
+            }
+            p.releaseResources();
+            return out;
+        };
+    };
+    for (int preset = 0; preset < 10; ++preset)
+        cs.push_back ({ "preset " + std::to_string (preset), strip (preset, -1) });
+    cs.push_back ({ "default", strip (-1, -1) });
+    cs.push_back ({ "everything eco", strip (-1, 0) });
+    cs.push_back ({ "everything hq", strip (-1, 1) });
+    return cs;
+}
+
+std::vector<Named> preCases()
+{
+    std::vector<Named> out;
+    for (const auto& c : buildCases()) out.push_back ({ c.name, [c] { return renderCase (c); } });
+    return out;
+}
+
+// Writes every case (name, sample count, samples) to a binary file.
+int writeReference (const juce::String& path, const std::vector<Named>& cases)
+{
     std::ofstream out (path.toStdString(), std::ios::binary);
     if (! out) { std::printf ("cannot write %s\n", path.toRawUTF8()); return 1; }
     const int32_t n = (int32_t) cases.size();
     out.write ((const char*) &n, 4);
     for (const auto& c : cases)
     {
-        const auto y = renderCase (c);
+        const auto y = c.render();
         const int32_t nl = (int32_t) c.name.size(), ny = (int32_t) y.size();
         out.write ((const char*) &nl, 4);
         out.write (c.name.data(), nl);
@@ -289,15 +347,15 @@ int runDump (const juce::String& path)
     return 0;
 }
 
-int runNull (const juce::String& path)
+// Renders every case again and prints the null depth against the file (worst case first).
+int checkReference (const juce::String& path, const std::vector<Named>& cases)
 {
     std::ifstream in (path.toStdString(), std::ios::binary);
     if (! in) { std::printf ("cannot read %s\n", path.toRawUTF8()); return 1; }
-    const auto cases = buildCases();
     int32_t n = 0;
     in.read ((char*) &n, 4);
     if (n != (int32_t) cases.size()) { std::printf ("case count mismatch: file %d, build %d\n", n, (int) cases.size()); return 1; }
-    double worst = -300.0, worstAbs = 0.0;
+    double worst = -1000.0, worstAbs = 0.0;
     std::string worstName;
     int above100 = 0;
     for (int k = 0; k < n; ++k)
@@ -311,7 +369,7 @@ int runNull (const juce::String& path)
         in.read ((char*) ref.data(), (std::streamsize) (ny * sizeof (float)));
         const auto& c = cases[(size_t) k];
         if (name != c.name) { std::printf ("case %d name mismatch: '%s' vs '%s'\n", k, name.c_str(), c.name.c_str()); return 1; }
-        const auto y = renderCase (c);
+        const auto y = c.render();
         double e = 0.0, r = 0.0, mx = 0.0;
         for (size_t i = 0; i < ref.size(); ++i)
         {
@@ -336,9 +394,11 @@ int runPreBench (const juce::StringArray& args)
     const auto sub = args.size() > 1 ? args[1] : juce::String ("time");
     if (sub == "time") return runTime();
     if (sub == "stages") return runStages();
-    if (sub == "dump" && args.size() > 2) return runDump (args[2]);
-    if (sub == "null" && args.size() > 2) return runNull (args[2]);
-    std::printf ("pre-bench time | stages | dump <file> | null <file>\n");
+    if (sub == "dump" && args.size() > 2) return writeReference (args[2], preCases());
+    if (sub == "null" && args.size() > 2) return checkReference (args[2], preCases());
+    if (sub == "strip-dump" && args.size() > 2) return writeReference (args[2], stripCases());
+    if (sub == "strip-null" && args.size() > 2) return checkReference (args[2], stripCases());
+    std::printf ("pre-bench time | stages | dump <file> | null <file> | strip-dump <file> | strip-null <file>\n");
     return 1;
 }
 } // namespace tool

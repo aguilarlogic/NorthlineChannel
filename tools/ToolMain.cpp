@@ -111,7 +111,7 @@ int main (int argc, char* argv[])
                  "  measure <suite|all|list> [--out dir] [--quick]\n"
                  "                               run measurement suites and write Markdown reports\n"
                  "  bench [--quick]              CPU benchmark of Northline Channel (in-process)\n"
-                 "  pre-bench time | stages | dump <file> | null <file>\n"
+                 "  pre-bench time | stages | dump|null <file> | strip-dump|strip-null <file>\n"
                  "                               PRE CPU per block, per-stage CPU, reference dump and null check\n"
                  "  host-bench <file.vst3> [name-filter] [--quick]\n"
                  "                               load any VST3 (e.g. a competitor strip) and benchmark it the same way\n"
