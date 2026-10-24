@@ -212,7 +212,7 @@ ModulePanel::ModulePanel (NorthlineProcessor& p, int id, int onParam, int modePa
     }
     compareToggle.setButtonText ("CMP");
     compareToggle.setTooltip ("Compare this module: hear the strip without it, loudness-matched (transient, amber while on)");
-    deltaToggle.setButtonText (juce::String::fromUTF8 ("Î"));
+    deltaToggle.setButtonText (juce::String::fromUTF8 ("\xce\x94") /* Greek capital delta */);
     deltaToggle.setTooltip ("Delta: hear only what this module removes or adds (transient, amber while on)");
     for (auto* b : { &compareToggle, &deltaToggle })
     {

@@ -186,7 +186,7 @@ void PreDisplay::paintTransfer (juce::Graphics& g, juce::Rectangle<float> a) con
     g.setColour (colours::faint);
     g.drawText ("SATURATION TRANSFER", a.removeFromTop (13.0f).reduced (4.0f, 0.0f), juce::Justification::left);
     g.drawText ("in dBFS", juce::Rectangle<float> (plot.getX(), plot.getBottom() + 1.0f, 60.0f, 11.0f), juce::Justification::left);
-    g.drawText ("out", juce::Rectangle<float> (plot.getX() - 16.0f, plot.getY() - 12.0f, 16.0f, 11.0f), juce::Justification::left);
+    g.drawText ("out", juce::Rectangle<float> (plot.getX() + 3.0f, plot.getY() + 2.0f, 30.0f, 11.0f), juce::Justification::left);
 
     g.setColour (colours::dim.withAlpha (0.45f));
     g.drawLine (xFor (-60.0f), yFor (-60.0f), xFor (0.0f), yFor (0.0f), 1.0f);
@@ -213,7 +213,8 @@ void PreDisplay::paintHarmonics (juce::Graphics& g, juce::Rectangle<float> a) co
 {
     g.setColour (colours::faint);
     g.setFont (NorthlineLookAndFeel::font (10.0f));
-    g.drawText ("HARMONICS (dBc)", a.removeFromTop (13.0f).reduced (4.0f, 0.0f), juce::Justification::left);
+    const auto title = a.removeFromTop (13.0f).reduced (4.0f, 0.0f);
+    g.drawText ("HARMONICS (dBc)", title, juce::Justification::left);
     const float fund = levels[0];
     if (! haveLevels || fund < -80.0f)
     {
@@ -222,7 +223,8 @@ void PreDisplay::paintHarmonics (juce::Graphics& g, juce::Rectangle<float> a) co
         return;
     }
     g.setColour (colours::dim);
-    g.drawText ("f0 " + juce::String (fund, 1) + " dBFS", a.removeFromTop (12.0f).reduced (4.0f, 0.0f), juce::Justification::topRight);
+    g.drawText ("f0 " + juce::String (fund, 1) + " dBFS", title, juce::Justification::right);
+    a.removeFromTop (12.0f); // the value row above the bars
 
     const float barW = (a.getWidth() - 12.0f) / (float) spectrum::kHarmonics;
     for (int h = 0; h < spectrum::kHarmonics; ++h)
@@ -236,7 +238,7 @@ void PreDisplay::paintHarmonics (juce::Graphics& g, juce::Rectangle<float> a) co
         g.fillRoundedRectangle (cell.withWidth (barW - 6.0f).withTop (cell.getBottom() - fill), 2.0f);
         g.setColour (colours::text);
         g.setFont (NorthlineLookAndFeel::font (10.0f));
-        g.drawText (juce::String (levels[(size_t) h + 1], 0), juce::Rectangle<float> (cell.getX() - 2.0f, cell.getY() - 13.0f, barW, 12.0f), juce::Justification::centred);
+        g.drawText (juce::String (juce::roundToInt (levels[(size_t) h + 1])), juce::Rectangle<float> (cell.getX() - 2.0f, cell.getY() - 13.0f, barW, 12.0f), juce::Justification::centred);
         g.setColour (colours::faint);
         g.drawText ("H" + juce::String (h + 2), juce::Rectangle<float> (cell.getX() - 2.0f, cell.getBottom() + 2.0f, barW, 12.0f), juce::Justification::centred);
     }
