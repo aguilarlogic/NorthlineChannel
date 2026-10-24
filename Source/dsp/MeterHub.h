@@ -70,9 +70,9 @@ public:
         for (size_t i = 0; i < n; ++i)
             out[i] = unpack (slots[(size_t) ((first + i) & (Capacity - 1))].load (std::memory_order_relaxed));
 
-        // Entries with index + Capacity <= the newest write may have been overwritten during the copy.
+        // Entries older than the newest write minus Capacity were overwritten during the copy.
         const uint64_t w2 = written.load (std::memory_order_acquire);
-        const uint64_t unsafeBelow = w2 >= Capacity ? w2 - Capacity + 1 : 0;
+        const uint64_t unsafeBelow = w2 >= Capacity ? w2 - Capacity : 0;
         const size_t lost = unsafeBelow > first ? (size_t) std::min<uint64_t> (unsafeBelow - first, n) : 0;
         if (lost > 0)
         {
