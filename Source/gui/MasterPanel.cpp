@@ -215,6 +215,13 @@ void MasterPanel::layoutBlocksFrom (juce::Rectangle<int> whole)
     }
 }
 
+void MasterPanel::setTarget (int index, double customTargetLufs)
+{
+    customLufs = loudness::clampCustom (customTargetLufs);
+    targetBox.setSelectedId (juce::jlimit (0, loudness::kNumTargets - 1, index) + 1, juce::dontSendNotification);
+    selectTarget (index);
+}
+
 void MasterPanel::selectTarget (int index)
 {
     targetIndex = juce::jlimit (0, loudness::kNumTargets - 1, index);

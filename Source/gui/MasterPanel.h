@@ -31,6 +31,8 @@ public:
     // Loudness target (stored in the panel until the session can hold it, see the integration request).
     int getTargetIndex() const noexcept { return targetIndex; }
     double getCustomTargetLufs() const noexcept { return customLufs; }
+    // Restores a saved target (session load); the custom value is clamped to its range.
+    void setTarget (int index, double customTargetLufs);
 
     // Named blocks of the last layout (for the layout test).
     struct Block
