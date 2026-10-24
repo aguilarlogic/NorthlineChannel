@@ -15,6 +15,7 @@ extern std::thread::id countingThread;
 int runTests (const juce::StringArray& args);
 int runMeasure (const juce::StringArray& args);
 int runBench (const juce::StringArray& args);
+int runPreBench (const juce::StringArray& args);
 
 // Sets a parameter by plain value.
 inline void setParam (nl::NorthlineProcessor& p, int index, float plain)

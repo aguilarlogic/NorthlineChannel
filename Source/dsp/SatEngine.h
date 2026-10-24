@@ -69,6 +69,7 @@ struct DroopFir
 {
     std::array<float, kMaxDroopTaps> h {};
     int taps = 0;
+    bool sym = false; // h[k] == h[taps - 1 - k] (zero-phase design): firRingSym
 };
 
 // Target log-gain of the droop correction for order-N ADAA at `rate`, 512-point grid (the magnitude of the
@@ -156,6 +157,9 @@ inline DroopFir makeDroopFirZeroPhase (int order, double rate, double baseFs, in
     double sum = 0.0;
     for (int m = 0; m < d.taps; ++m) sum += d.h[(size_t) m];
     for (int m = 0; m < d.taps; ++m) d.h[(size_t) m] = (float) (d.h[(size_t) m] / sum);
+    // the design is symmetric (up to rounding): make it exact, so firRingSym can share one product per pair
+    for (int m = 0; m < delay; ++m) d.h[(size_t) (d.taps - 1 - m)] = d.h[(size_t) m];
+    d.sym = true;
     return d;
 }
 
@@ -305,80 +309,142 @@ inline void firRing (const float* h, int taps, float* ring, int& pos, const floa
     }
 }
 
-// One chunk of at most kFirMaxBlock samples. The ramp is taken by reference, so chunks continue it exactly.
-template <class S, bool Tube>
-inline void runChunk (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const float* in, float* out, int n, Ramp& r) noexcept
+// firRing for a symmetric FIR (odd taps, h[k] == h[taps - 1 - k]): tap k and tap taps-1-k read x[i-k] and
+// win[i + k], so each pair is one product.
+inline void firRingSym (const float* h, int taps, float* ring, int& pos, const float* in, float* out, int n) noexcept
 {
-    // Pass 1: pre-emphasis (sequential filters). Pass 2: the droop FIR over the block (linear, no feedback).
-    // Pass 3: gain, shaper, post-emphasis, per sample.
-    float pre[kFirMaxBlock], drooped[kFirMaxBlock];
-    for (int i = 0; i < n; ++i)
+    float win[kFirMaxBlock + 64];
+    const int hl = taps - 1, c = hl / 2;
+    for (int j = 0; j < hl; ++j) win[j] = ring[(pos - hl + j) & 63];
+    for (int i = 0; i < n; ++i) win[hl + i] = in[i];
+    for (int i = 0; i < n; ++i) ring[(pos + i) & 63] = in[i];
+    pos = (pos + n) & 63;
+    const float* mid = win + hl - c;
+    for (int i = 0; i < n; ++i) out[i] = h[c] * mid[i];
+    for (int k = 0; k < c; ++k)
     {
-        float x = in[i];
-        if (c.tiltOn) x = st.tPreHS.process (st.tPreLS.process (x, c.tPreLS), c.tPreHS) * c.tPreGain;
-        if (c.preLSOn) x = st.preLS.process (x, c.preLS);
-        if (c.preHSOn) x = st.preHS.process (x, c.preHS);
-        pre[i] = x;
-    }
-    firRing (c.droop.h.data(), c.droop.taps, st.droopHist, st.droopPos, pre, drooped, n);
-    for (int i = 0; i < n; ++i)
-    {
-        const float x = drooped[i];
-        const double u = (double) x * r.g;
-        r.g += r.dg;
-        if (Tube || c.dynHF) // envelope of the shaper input: Tube bias, Tape HF loss
-        {
-            const float a = (float) std::abs (u);
-            st.env += (a - st.env) * (a > st.env ? 1.0f - c.envAtt : 1.0f - c.envRel);
-        }
-        double ys;
-        if (c.dc)
-        {
-            // Remove only the DC / sub-audio part of the distortion residual (shaper output minus its
-            // linear response), so low-frequency program content passes untouched.
-            const double lin = c.order == 1 ? 0.5 * (u + adaa.x1) : (u + adaa.x1 + adaa.x2) * (1.0 / 3.0);
-            ys = adaa.process (u);
-            ys -= (double) st.dc.lowpass ((float) (ys - lin));
-        }
-        else
-        {
-            ys = adaa.process (u);
-        }
-        float y = (float) (ys * r.go);
-        r.go += r.dgo;
-        if (c.postLSOn) y = st.postLS.process (y, c.postLS);
-        y = st.postHS.process (y, c.postHS);
-        if (c.bump) y = st.bumpSt.process (y, c.bumpBell);
-        if (c.dynHF)
-        {
-            const float e = st.env / (st.env + (float) kTapeKnee);
-            y += e * (st.dynSt.process (y, c.dynHS) - y);
-        }
-        if (c.tiltOn) y = st.tPostLS.process (st.tPostHS.process (y, c.tPostHS), c.tPostLS) * c.tPostGain;
-        out[i] = y;
+        const float hk = h[k];
+        const float* a = win + hl - k;
+        const float* b = win + k;
+        for (int i = 0; i < n; ++i) out[i] += hk * (a[i] + b[i]);
     }
 }
 
-template <class S, bool Tube>
-inline void runSegment (shaper::Adaa<S>& adaa, State& st, const Coefs& c, const float* in, float* out, int n, Ramp r) noexcept
+// The droop filter of a design: the symmetric variant when the design is zero-phase.
+inline void droopFilter (const DroopFir& d, float* ring, int& pos, const float* in, float* out, int n) noexcept
 {
+    if (d.sym) firRingSym (d.h.data(), d.taps, ring, pos, in, out, n);
+    else firRing (d.h.data(), d.taps, ring, pos, in, out, n);
+}
+
+// One chunk of at most kFirMaxBlock samples for N channels (N = 1 or 2). The channels run in one loop, so the
+// sequential filters of the two channels overlap in the pipeline; each channel's arithmetic is unchanged.
+// The ramp is taken by reference, so chunks continue it exactly.
+template <class S, bool Tube, int N>
+inline void runChunk (shaper::Adaa<S>* const* adaa, State* const* st, const Coefs& c, const float* const* in, float* const* out, int n, Ramp& r) noexcept
+{
+    // Pass 1: pre-emphasis (sequential filters). Pass 2: the droop FIR over the block (linear, no feedback).
+    // Pass 3: gain, shaper, post-emphasis, per sample.
+    float pre[N][kFirMaxBlock], drooped[N][kFirMaxBlock];
+    for (int i = 0; i < n; ++i)
+        for (int ch = 0; ch < N; ++ch)
+        {
+            State& s = *st[ch];
+            float x = in[ch][i];
+            if (c.tiltOn) x = s.tPreHS.process (s.tPreLS.process (x, c.tPreLS), c.tPreHS) * c.tPreGain;
+            if (c.preLSOn) x = s.preLS.process (x, c.preLS);
+            if (c.preHSOn) x = s.preHS.process (x, c.preHS);
+            pre[ch][i] = x;
+        }
+    for (int ch = 0; ch < N; ++ch) droopFilter (c.droop, st[ch]->droopHist, st[ch]->droopPos, pre[ch], drooped[ch], n);
+    for (int i = 0; i < n; ++i)
+    {
+        for (int ch = 0; ch < N; ++ch)
+        {
+            State& s = *st[ch];
+            shaper::Adaa<S>& adaaCh = *adaa[ch];
+            const float x = drooped[ch][i];
+            const double u = (double) x * r.g;
+            if (Tube || c.dynHF) // envelope of the shaper input: Tube bias, Tape HF loss
+            {
+                const float a = (float) std::abs (u);
+                s.env += (a - s.env) * (a > s.env ? 1.0f - c.envAtt : 1.0f - c.envRel);
+            }
+            double ys;
+            if (c.dc)
+            {
+                // Remove only the DC / sub-audio part of the distortion residual (shaper output minus its
+                // linear response), so low-frequency program content passes untouched.
+                const double lin = c.order == 1 ? 0.5 * (u + adaaCh.x1) : (u + adaaCh.x1 + adaaCh.x2) * (1.0 / 3.0);
+                ys = adaaCh.process (u);
+                ys -= (double) s.dc.lowpass ((float) (ys - lin));
+            }
+            else
+            {
+                ys = adaaCh.process (u);
+            }
+            float y = (float) (ys * r.go);
+            if (c.postLSOn) y = s.postLS.process (y, c.postLS);
+            y = s.postHS.process (y, c.postHS);
+            if (c.bump) y = s.bumpSt.process (y, c.bumpBell);
+            if (c.dynHF)
+            {
+                const float e = s.env / (s.env + (float) kTapeKnee);
+                y += e * (s.dynSt.process (y, c.dynHS) - y);
+            }
+            if (c.tiltOn) y = s.tPostLS.process (s.tPostHS.process (y, c.tPostHS), c.tPostLS) * c.tPostGain;
+            out[ch][i] = y;
+        }
+        r.g += r.dg;
+        r.go += r.dgo;
+    }
+}
+
+template <class S, bool Tube, int N>
+inline void runSegment (shaper::Adaa<S> State::* member, State* const* st, const Coefs& c, const float* const* in, float* const* out, int n, Ramp r) noexcept
+{
+    shaper::Adaa<S>* adaa[N];
+    for (int ch = 0; ch < N; ++ch) adaa[ch] = &(st[ch]->*member);
     for (int i = 0; i < n; i += kFirMaxBlock)
-        runChunk<S, Tube> (adaa, st, c, in + i, out + i, std::min (kFirMaxBlock, n - i), r);
+    {
+        const float* inC[N];
+        float* outC[N];
+        for (int ch = 0; ch < N; ++ch) { inC[ch] = in[ch] + i; outC[ch] = out[ch] + i; }
+        runChunk<S, Tube, N> (adaa, st, c, inC, outC, std::min (kFirMaxBlock, n - i), r);
+    }
+}
+
+template <int N>
+inline void processN (State* const* st, const Coefs& c, const float* const* in, float* const* out, int n, const Ramp& r) noexcept
+{
+    switch (c.type)
+    {
+        case shaper::Even:        runSegment<shaper::BiasedSig, false, N> (&State::biased, st, c, in, out, n, r); break;
+        case shaper::Tube:        runSegment<shaper::BiasedSig, true, N> (&State::biased, st, c, in, out, n, r); break;
+        case shaper::Heavy:       runSegment<shaper::Cubic, false, N> (&State::cubic, st, c, in, out, n, r); break;
+        case shaper::Crush:       runSegment<shaper::Clip, false, N> (&State::clip, st, c, in, out, n, r); break;
+        case shaper::Tape:        runSegment<shaper::Atan, false, N> (&State::atn, st, c, in, out, n, r); break;
+        case shaper::Odd:
+        case shaper::Transformer:
+        default:                  runSegment<shaper::Sig, false, N> (&State::sig, st, c, in, out, n, r); break;
+    }
 }
 
 inline void process (State& st, const Coefs& c, const float* in, float* out, int n, const Ramp& r) noexcept
 {
-    switch (c.type)
-    {
-        case shaper::Even:        runSegment<shaper::BiasedSig, false> (st.biased, st, c, in, out, n, r); break;
-        case shaper::Tube:        runSegment<shaper::BiasedSig, true> (st.biased, st, c, in, out, n, r); break;
-        case shaper::Heavy:       runSegment<shaper::Cubic, false> (st.cubic, st, c, in, out, n, r); break;
-        case shaper::Crush:       runSegment<shaper::Clip, false> (st.clip, st, c, in, out, n, r); break;
-        case shaper::Tape:        runSegment<shaper::Atan, false> (st.atn, st, c, in, out, n, r); break;
-        case shaper::Odd:
-        case shaper::Transformer:
-        default:                  runSegment<shaper::Sig, false> (st.sig, st, c, in, out, n, r); break;
-    }
+    State* s[1] { &st };
+    const float* i[1] { in };
+    float* o[1] { out };
+    processN<1> (s, c, i, o, n, r);
+}
+
+// Both channels of a stereo section in one pass (see runChunk).
+inline void processStereo (State& s0, State& s1, const Coefs& c, const float* in0, const float* in1, float* out0, float* out1, int n, const Ramp& r) noexcept
+{
+    State* s[2] { &s0, &s1 };
+    const float* i[2] { in0, in1 };
+    float* o[2] { out0, out1 };
+    processN<2> (s, c, i, o, n, r);
 }
 
 //==============================================================================
