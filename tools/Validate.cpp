@@ -43,14 +43,8 @@ struct KnownFail
     const char* reason;
 };
 
-constexpr KnownFail kKnownFails[] = {
-    { "compare.click_free",
-      "ChannelStrip.cpp: switching Compare from one module (PRE, GATE, DE-ESS or EQ) straight to module COMP gives a "
-      "single-sample step of about 0.05 at the block where the switch lands (steady 0.002); other transitions are "
-      "smooth. Cause not isolated: the transition needs two module fades to cross, so look at the module loop in "
-      "ChannelStrip::process (moduleFade, the silent-module path) and at the COMP path. Reproducer: "
-      "NL_KNOWN_FAIL validate_KNOWN_FAIL_compare_click in tools/tests/TestValidate.cpp." },
-};
+// Empty while no bug is open; add { "section.check", "file: cause, fix" } entries here.
+constexpr std::array<KnownFail, 0> kKnownFails {};
 
 //==============================================================================
 struct Row

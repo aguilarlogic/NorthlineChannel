@@ -15,8 +15,7 @@ int runSuite (bool quick, juce::uint32 seed, int& failed, int& known);
 // marker when the fix lands.
 inline bool knownFailsEnabled()
 {
-    const char* v = std::getenv ("NL_RUN_KNOWN_FAILS");
-    return v != nullptr && v[0] == '1';
+    return juce::SystemStats::getEnvironmentVariable ("NL_RUN_KNOWN_FAILS", {}) == "1";
 }
 
 #define NL_KNOWN_FAIL(name, reason)                                                          \
@@ -39,10 +38,9 @@ NL_TEST (validate_quick)
                  juce::String (known) + " known failure(s) reported as KNOWN");
 }
 
-// Reproducer for the "compare.click_free" known failure: a steady 100 Hz sine through every module, Compare
-// switched from module PRE to module COMP at a block boundary. The step at the switch must stay near the steady step.
-NL_KNOWN_FAIL (validate_KNOWN_FAIL_compare_click,
-               "ChannelStrip.cpp: PRE -> COMP module Compare switch gives a 0.05 step at the switch (fix in ChannelStrip)")
+// A steady 100 Hz sine through every module, Compare switched from module PRE to module COMP at a block
+// boundary. The step at the switch must stay near the steady step (the learned level glides, not snaps).
+NL_TEST (validate_compare_module_to_module)
 {
     constexpr double fs = 48000.0;
     constexpr int block = 256;

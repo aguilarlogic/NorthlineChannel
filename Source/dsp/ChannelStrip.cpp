@@ -224,22 +224,22 @@ size_t ChannelStrip::popAnalyser (AnalyserTap tap, float* out, size_t maxCount) 
 // with no reduction, so the scope keeps running whatever the module state.
 void ChannelStrip::scopeSlot (int id, const float* const* in, const float* const* out, int numCh, int n, bool silent) noexcept
 {
-    float gr = 0.0f, key = -120.0f, gr2 = 0.0f, key2 = -120.0f;
+    float gr = 0.0f, keyDb = -120.0f, gr2 = 0.0f, keyDb2 = -120.0f;
     if (! silent)
     {
         switch (id)
         {
-            case modGate: gr = gate.getGainReductionDb(); key = gate.getKeyLevelDb(); break;
-            case modComp: gr = comp.getGainReductionDb(); key = comp.getKeyLevelDb(); break;
+            case modGate: gr = gate.getGainReductionDb(); keyDb = gate.getKeyLevelDb(); break;
+            case modComp: gr = comp.getGainReductionDb(); keyDb = comp.getKeyLevelDb(); break;
             case modDs:
-                gr = ds.getGainReductionDb (0);  key = ds.getKeyLevelDb (0);
-                gr2 = ds.getGainReductionDb (1); key2 = ds.getKeyLevelDb (1);
+                gr = ds.getGainReductionDb (0);  keyDb = ds.getKeyLevelDb (0);
+                gr2 = ds.getGainReductionDb (1); keyDb2 = ds.getKeyLevelDb (1);
                 break;
             default: break;
         }
     }
-    scopes[(size_t) id].process (in, out, numCh, n, gr, key);
-    if (id == modDs) dsBand2Scope.process (in, out, numCh, n, gr2, key2);
+    scopes[(size_t) id].process (in, out, numCh, n, gr, keyDb);
+    if (id == modDs) dsBand2Scope.process (in, out, numCh, n, gr2, keyDb2);
 }
 
 // Mono signal for the analysers: channel 0 in M/S, the average of L and R otherwise.
@@ -617,10 +617,13 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     const int deltaBits = deltaMask.load (std::memory_order_relaxed);
     const bool cmpChanged = cmpTarget != lastCompareTarget;
     lastCompareTarget = cmpTarget;
+    const bool modCompareOff = modW.isConstant() && modW.target() == 0.0f;
     wholeW.setTarget (cmpTarget == 0 ? 1.0f : 0.0f);
     modW.setTarget (cmpTarget >= 1 ? 1.0f : 0.0f);
     modGainV.setTarget (cmpTarget >= 1 ? learn[(size_t) (cmpTarget - 1)].gainLin : 1.0f);
-    if (cmpChanged) modGainV.snap(); // a new compared module starts from its own learned level, not a glide
+    // A module compared from off starts at its own learned level (modW ramps up from 0, so that is
+    // seamless). From another module, modW is already applied, so the level glides instead of stepping.
+    if (cmpChanged && modCompareOff) modGainV.snap();
     for (int m : { (int) modPre, (int) modGate, (int) modEq })
         deltaW[(size_t) m].setTarget (((deltaBits >> m) & 1) != 0 ? 1.0f : 0.0f);
 
