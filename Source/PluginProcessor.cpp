@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "gui/PluginEditor.h"
+#include "hub/InstanceRegistry.h"
 
 namespace nl
 {
@@ -152,10 +153,14 @@ NorthlineProcessor::NorthlineProcessor()
     slots[1] = slots[0].createCopy();
     pushUndoSnapshot();
     startTimerHz (10);
+
+    // Instance Hub (9.2): the registry holds a weak reference; the destructor removes the entry.
+    hubId = hub::InstanceRegistry::instance().add (*this);
 }
 
 NorthlineProcessor::~NorthlineProcessor()
 {
+    hub::InstanceRegistry::instance().remove (hubId);
     stopTimer();
     cancelPendingUpdate();
     for (auto* p : params)
@@ -184,6 +189,7 @@ void NorthlineProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     preparedBlock = std::max (16, samplesPerBlock);
     for (auto& v : scCopy) v.assign ((size_t) preparedBlock, 0.0f);
     strip.prepare (sampleRate, preparedBlock, numCh);
+    smartStart.prepare (sampleRate); // Smart Start capture buffer (allocated here, never on the audio thread)
     setLatencySamples (strip.getLatencySamples());
 }
 
@@ -218,6 +224,7 @@ void NorthlineProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             strip.meterHub().setTransportPlaying (position->getIsPlaying());
 
     // Process in chunks no larger than the prepared block size.
+    const auto cpuStart = juce::Time::getHighResolutionTicks();
     int pos = 0;
     while (pos < n)
     {
@@ -237,9 +244,16 @@ void NorthlineProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             }
         }
         if (monoToStereo) std::copy (io[0], io[0] + len, io[1]);
+        // Smart Start capture: the raw input, before the strip touches it (writes samples and atomics only).
+        smartStart.getCapture().write (io, numCh, len);
         strip.process (io, numCh, len, scCh > 0 ? key : nullptr, scCh);
         pos += len;
     }
+
+    // Instance Hub: smoothed share of the block duration spent in the plug-in.
+    const double busyUs = (double) (juce::Time::getHighResolutionTicks() - cpuStart) * 1.0e6 / juce::Time::getHighResolutionTicksPerSecond();
+    const double blockUs = n * 1.0e6 / juce::jmax (1.0, getSampleRate());
+    cpuPercent.store (0.9f * cpuPercent.load (std::memory_order_relaxed) + 0.1f * (float) (100.0 * busyUs / blockUs), std::memory_order_relaxed);
 }
 
 //==============================================================================
@@ -401,6 +415,8 @@ void NorthlineProcessor::applySnapshot (const juce::ValueTree& s)
 
 void NorthlineProcessor::resetTransientParams()
 {
+    strip.setCompare (-1); // Compare and Delta are transient too
+    for (int m = 0; m < numModules; ++m) strip.setDelta (m, false);
     for (int i = 0; i < P::count; ++i)
     {
         if (! isTransient (i)) continue;
@@ -492,6 +508,9 @@ void NorthlineProcessor::servicePendingWork()
         lastLearnedSerial = status.learnedSerial;
         writeParameter (P::matchTrim, status.learnedTrimDb);
     }
+
+    // Smart Start: a finished analysis is applied here, on the message thread, as one undo step.
+    if (smartStart.service (currentPlainValues())) applySmartResult (smartStart.lastResult());
 }
 
 //==============================================================================
@@ -642,6 +661,80 @@ bool NorthlineProcessor::loadUserPreset (const juce::File& file)
     pushUndoSnapshot();
     return true;
 }
+//==============================================================================
+// Compare and Delta (9.3)
+
+void NorthlineProcessor::setDelta (int moduleId, bool on)
+{
+    if (moduleId == modDs) writeParameter (P::dsListen, on ? 3.0f : 0.0f);         // the de-esser's own Delta listen
+    else if (moduleId == modComp) writeParameter (P::compListen, on ? 2.0f : 0.0f); // the compressor's own Delta listen
+    else strip.setDelta (moduleId, on);
+}
+
+bool NorthlineProcessor::getDelta (int moduleId) const
+{
+    if (moduleId == modDs) return juce::roundToInt (plainValue (P::dsListen)) == 3;
+    if (moduleId == modComp) return juce::roundToInt (plainValue (P::compListen)) == 2;
+    return strip.getDelta (moduleId);
+}
+
+//==============================================================================
+// Smart Start (9.1)
+
+bool NorthlineProcessor::smartListen (smart::Source source) { return smartStart.listen (source); }
+void NorthlineProcessor::smartCancel() { smartStart.cancel(); }
+
+bool NorthlineProcessor::applySmartResult (const smart::Result& result)
+{
+    if (! result.valid || result.changes.empty()) return false;
+    auto snapshot = makeSnapshot();
+    std::vector<int> changed;
+    for (const auto& c : result.changes)
+    {
+        snapshot.setProperty (paramID (c.param), (double) c.to, nullptr);
+        changed.push_back (c.param);
+    }
+    applySnapshot (snapshot); // parameters are written without undo entries
+    pushUndoSnapshot();       // one entry for the whole analysis
+    setFocus (changed);       // Spotlight shows exactly what changed
+    return true;
+}
+
+//==============================================================================
+// Instance Hub (9.2)
+
+void NorthlineProcessor::updateTrackProperties (const TrackProperties& properties)
+{
+    const juce::ScopedLock sl (stateLock);
+    trackName = properties.name.value_or (juce::String());
+    trackColourARGB = properties.colourARGB.value_or ((juce::uint32) 0);
+}
+
+juce::String NorthlineProcessor::getTrackName() const
+{
+    const juce::ScopedLock sl (stateLock);
+    return trackName;
+}
+
+juce::uint32 NorthlineProcessor::getTrackColourARGB() const
+{
+    const juce::ScopedLock sl (stateLock);
+    return trackColourARGB;
+}
+
+float NorthlineProcessor::plainValue (int index) const
+{
+    auto* p = params[(size_t) index];
+    return p->convertFrom0to1 (p->getValue());
+}
+
+std::array<float, P::count> NorthlineProcessor::currentPlainValues() const
+{
+    std::array<float, P::count> values {};
+    for (int i = 0; i < P::count; ++i) values[(size_t) i] = plainValue (i);
+    return values;
+}
+
 } // namespace nl
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new nl::NorthlineProcessor(); }

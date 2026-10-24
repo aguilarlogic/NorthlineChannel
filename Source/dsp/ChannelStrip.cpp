@@ -450,6 +450,100 @@ void ChannelStrip::mixStage (float* const* io, int numCh, int n)
 }
 
 //==============================================================================
+//==============================================================================
+// Compare and Delta (9.3)
+
+void ChannelStrip::setDelta (int moduleId, bool on) noexcept
+{
+    if (moduleId != modPre && moduleId != modGate && moduleId != modEq) return;
+    // The message thread is the only writer, so a load and a store are enough.
+    const int mask = deltaMask.load (std::memory_order_relaxed);
+    const int bit = 1 << moduleId;
+    deltaMask.store (on ? (mask | bit) : (mask & ~bit), std::memory_order_relaxed);
+}
+
+bool ChannelStrip::getDelta (int moduleId) const noexcept
+{
+    if (moduleId < 0 || moduleId >= numModules) return false;
+    return ((deltaMask.load (std::memory_order_relaxed) >> moduleId) & 1) != 0;
+}
+
+// Smoothed energies of the module's wet and dry signals. The learned wet/dry level ratio is
+// refreshed on control ticks only, so it does not depend on the host block size. It is clamped to +/-12 dB.
+void ChannelStrip::learnModule (int id, const float* const* wet, const float* const* dry, int numCh, int n, uint32_t phase) noexcept
+{
+    auto& l = learn[(size_t) id];
+    float ew = l.ew, ed = l.ed, g = l.gainLin;
+    const float a = learnAlpha, b = 1.0f - a;
+    for (int i = 0; i < n; ++i)
+    {
+        if (ew > 1.0e-10f && ed > 1.0e-10f && ((phase + (uint32_t) i) % (uint32_t) kControlBlock) == 0)
+            g = std::clamp (std::sqrt (ew / ed), 0.25f, 4.0f);
+        float sw = 0.0f, sd = 0.0f;
+        for (int c = 0; c < numCh; ++c)
+        {
+            sw += wet[c][i] * wet[c][i];
+            sd += dry[c][i] * dry[c][i];
+        }
+        ew = a * ew + b * sw;
+        ed = a * ed + b * sd;
+    }
+    l.ew = ew;
+    l.ed = ed;
+    l.gainLin = g;
+}
+
+// Delta output: the module's output minus its latency-aligned input, crossfaded in and out.
+// dry may alias io (a silent module's output is its input).
+void ChannelStrip::applyDelta (int id, float* const* io, const float* const* dry, int numCh, int n, uint32_t phase) noexcept
+{
+    if (id != modPre && id != modGate && id != modEq) return;
+    auto& w = deltaW[(size_t) id];
+    if (w.isConstant() && w.target() == 0.0f) return;
+    w.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j)
+        {
+            const float d = base + slope * (float) (offset + j);
+            for (int c = 0; c < numCh; ++c) io[c][s + j] -= d * dry[c][s + j];
+        }
+    });
+}
+
+// Whole-strip Compare: crossfade from the processed output to the bypass path.
+void ChannelStrip::applyWholeCompare (float* const* io, int numCh, int n, uint32_t phase) noexcept
+{
+    wholeW.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j)
+        {
+            const float w = base + slope * (float) (offset + j);
+            for (int c = 0; c < numCh; ++c) io[c][s + j] += (cmpBuf[(size_t) c][(size_t) (s + j)] - io[c][s + j]) * w;
+        }
+    });
+}
+
+// Module Compare: the module is bypassed in the chain (its fade does that), and the bypassed chain is
+// scaled by the module's learned wet/dry level, so the two states are loudness-matched.
+void ChannelStrip::applyModuleCompare (float* const* io, int numCh, int n, uint32_t phase) noexcept
+{
+    float* g = modGainBuf.data();
+    modGainV.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j) g[s + j] = base + slope * (float) (offset + j);
+    });
+    modW.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j)
+        {
+            const float w = base + slope * (float) (offset + j);
+            const float gain = 1.0f + w * (g[s + j] - 1.0f);
+            for (int c = 0; c < numCh; ++c) io[c][s + j] *= gain;
+        }
+    });
+}
+
+//==============================================================================
 void ChannelStrip::process (float* const* io, int numChannels, int n, const float* const* sidechain, int sidechainChannels)
 {
     jassert (n <= maxBlock);

@@ -13,7 +13,7 @@ class SmartStart
 public:
     enum class Phase : int { Idle = 0, Capturing, Analysing, Done };
 
-    SmartStart() = default;
+    SmartStart();
     ~SmartStart();
 
     // Message thread, while audio is stopped.

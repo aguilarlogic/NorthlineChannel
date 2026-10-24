@@ -23,6 +23,8 @@ private:
     std::array<float, P::count> current;
 };
 
+SmartStart::SmartStart() = default;
+
 SmartStart::~SmartStart()
 {
     if (worker != nullptr) worker->waitForThreadToExit (-1);
