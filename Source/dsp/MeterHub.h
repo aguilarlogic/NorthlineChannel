@@ -225,12 +225,9 @@ public:
     // Full reset including filter state. Not for use while process() runs on another thread.
     void reset() noexcept
     {
-        for (int c = 0; c < 2; ++c)
-        {
-            kw[c][0].setup (kwProto[0]);
-            kw[c][1].setup (kwProto[1]);
-            acc[c] = 0.0;
-        }
+        kw[0].setup (kwProto[0]);
+        kw[1].setup (kwProto[1]);
+        acc[0] = acc[1] = 0.0;
         tps.reset();
         subRing.fill (0.0);
         subHead = 0;
@@ -289,15 +286,8 @@ public:
         while (i < n)
         {
             const int len = std::min ({ n - i, kControlBlock - ctrlCount, subLen - subCount });
-            float sx[2][kControlBlock];
-            for (int c = 0; c < nc; ++c)
-                for (int j = 0; j < len; ++j)
-                {
-                    const float s = io[c][i + j];
-                    sx[c][j] = std::abs (s) <= 1.0e6f ? s : 0.0f; // NaN and Inf measure as silence
-                }
-            processChunk (sx, nc, len);
-            pushScope (sx, nc, len);
+            if (nc == 2) processChunk<true> (io[0] + i, io[1] + i, len);
+            else processChunk<false> (io[0] + i, nullptr, len);
             i += len;
             ctrlCount += len;
             subCount += len;
@@ -407,6 +397,8 @@ private:
     static constexpr size_t kWords = sizeof (MeterSnapshot) / 8;
 
     static float linToDb (float lin) noexcept { return lin > 1.0e-10f ? fastGainToDb (lin) : -200.0f; }
+    // Samples above 1e6 (and NaN and Inf) measure as silence.
+    static float sanitize (float s) noexcept { return std::abs (s) <= 1.0e6f ? s : 0.0f; }
 
     bool gatingOn() const noexcept { return ! (pauseWhenStopped.load (std::memory_order_relaxed) && ! playing.load (std::memory_order_relaxed)); }
 
@@ -433,118 +425,80 @@ private:
         hopPhase = 0;
     }
 
-    void processChunk (const float (&sx)[2][kControlBlock], int nc, int len) noexcept
+    // One chunk of at most kControlBlock samples (both channels when Stereo). All per-sample meter
+    // work happens in this single pass: sample peaks, K-weighted energy, correlation and VU sums,
+    // the true-peak interpolation, the overs count and the vectorscope decimation.
+    template <bool Stereo>
+    void processChunk (const float* a, const float* b, int len) noexcept
     {
-        // Sample peak and K-weighted energy. The two channels run in one loop: their biquad chains
-        // are independent, and interleaving them hides most of the filter's feedback latency.
-        if (nc == 2)
-        {
-            float pk0 = spMax[0], pk1 = spMax[1];
-            double e0 = acc[0], e1 = acc[1];
-            auto& a0 = kw[0][0];
-            auto& b0 = kw[0][1];
-            auto& a1 = kw[1][0];
-            auto& b1 = kw[1][1];
-            for (int j = 0; j < len; ++j)
-            {
-                const float x0 = sx[0][j], x1 = sx[1][j];
-                pk0 = std::max (pk0, std::abs (x0));
-                pk1 = std::max (pk1, std::abs (x1));
-                const double y0 = b0.process (a0.process ((double) x0));
-                const double y1 = b1.process (a1.process ((double) x1));
-                e0 += y0 * y0;
-                e1 += y1 * y1;
-            }
-            spMax[0] = pk0;
-            spMax[1] = pk1;
-            acc[0] = e0;
-            acc[1] = e1;
-        }
-        else
-        {
-            float pk = spMax[0];
-            double e = acc[0];
-            auto& s1 = kw[0][0];
-            auto& s2 = kw[0][1];
-            for (int j = 0; j < len; ++j)
-            {
-                const float x = sx[0][j];
-                pk = std::max (pk, std::abs (x));
-                const double y = s2.process (s1.process ((double) x));
-                e += y * y;
-            }
-            spMax[0] = pk;
-            acc[0] = e;
-        }
-
-        // Correlation and VU inputs.
-        if (nc == 2)
-        {
-            double xy = accXY, xx = accXX, yy = accYY, rect = vuAcc;
-            for (int j = 0; j < len; ++j)
-            {
-                const double l = sx[0][j], r = sx[1][j];
-                xy += l * r;
-                xx += l * l;
-                yy += r * r;
-                rect += 0.5 * (std::abs (l) + std::abs (r));
-            }
-            accXY = xy;
-            accXX = xx;
-            accYY = yy;
-            vuAcc = rect;
-        }
-        else
-        {
-            double rect = vuAcc, xx = accXX;
-            for (int j = 0; j < len; ++j)
-            {
-                rect += std::abs (sx[0][j]);
-                xx += (double) sx[0][j] * sx[0][j];
-            }
-            vuAcc = rect;
-            accXX = xx;
-        }
-
-        // True peak (4x polyphase), with a cheap bound that skips the interpolation when it cannot
-        // change the maximum or the over count.
+        float pk0 = spMax[0], pk1 = spMax[1];
+        Pair2 ee = Pair2::make (acc[0], acc[1]);
+        double xy = accXY, xx = accXX, yy = accYY, rect = vuAcc;
         const float thr = overThr;
+        const bool trueOvers = thr > 0.0f && overTrue;
+        auto ts = tps.getState();
+
         for (int j = 0; j < len; ++j)
         {
-            float bound = 0.0f;
-            for (int c = 0; c < nc; ++c)
+            const float x0 = sanitize (a[j]);
+            const float x1 = Stereo ? sanitize (b[j]) : x0;
+
+            pk0 = std::max (pk0, std::abs (x0));
+            const Pair2 y = kw[1].process (kw[0].process (Pair2::make ((double) x0, (double) x1)));
+            ee = ee + y * y;
+            if constexpr (Stereo)
             {
-                tp[c].push (sx[c][j]);
-                bound = std::max (bound, tp[c].windowMax());
+                pk1 = std::max (pk1, std::abs (x1));
+                xy += (double) x0 * x1;
+                xx += (double) x0 * x0;
+                yy += (double) x1 * x1;
+                rect += 0.5 * (std::abs ((double) x0) + std::abs ((double) x1));
             }
+            else
+            {
+                xx += (double) x0 * x0;
+                rect += std::abs ((double) x0);
+            }
+
+            // True peak: the window ends with this pair. The bound is exact, so the interpolation
+            // is skipped only when it cannot change the maximum or the over count.
+            tps.push (ts, x0, x1);
+            const float bound = tps.windowMax (ts);
             float skipLevel = tpMax;
-            if (thr > 0.0f && overTrue) skipLevel = std::min (skipLevel, thr);
+            if (trueOvers) skipLevel = std::min (skipLevel, thr);
             const bool skip = bound * tpKernel.l1 * 1.1f <= skipLevel;
             float peak = 0.0f;
-            for (int c = 0; c < nc; ++c) peak = std::max (peak, tp[c].slotPeak (tpKernel, false, skip));
+            if (! skip)
+            {
+                peak = tps.slotPeak (ts, tpKernel, 0);
+                if constexpr (Stereo) peak = std::max (peak, tps.slotPeak (ts, tpKernel, 1));
+            }
             tpMax = std::max (tpMax, peak);
             if (thr > 0.0f)
             {
                 float v = peak;
                 if (! overTrue)
                 {
-                    v = std::abs (sx[0][j]);
-                    if (nc > 1) v = std::max (v, std::abs (sx[1][j]));
+                    v = std::abs (x0);
+                    if constexpr (Stereo) v = std::max (v, std::abs (x1));
                 }
                 if (v > thr) ++overs;
             }
-        }
-    }
 
-    // Vectorscope: every kScopeDecimation-th output pair, counted across blocks.
-    void pushScope (const float (&sx)[2][kControlBlock], int nc, int len) noexcept
-    {
-        const int r = nc > 1 ? 1 : 0;
-        for (int j = 0; j < len; ++j)
-        {
-            if (scopePhase == 0) scopeRing.push (sx[0][j], sx[r][j]);
+            // Vectorscope: every kScopeDecimation-th output pair, counted across blocks.
+            if (scopePhase == 0) scopeRing.push (x0, x1);
             scopePhase = scopePhase + 1 == kScopeDecimation ? 0 : scopePhase + 1;
         }
+
+        spMax[0] = pk0;
+        spMax[1] = pk1;
+        acc[0] = ee.lane (0);
+        if constexpr (Stereo) acc[1] = ee.lane (1); // mono: the right lane only carries a copy of the left
+        accXY = xy;
+        accXX = xx;
+        accYY = yy;
+        vuAcc = rect;
+        tps.setState (ts);
     }
 
     void controlTick (int nc) noexcept
@@ -658,8 +612,9 @@ private:
     double fs = 48000.0;
     int subLen = 480, grBinLen = 480;
     TruePeakKernel tpKernel;
-    BiquadD kwProto[2], kw[2][2];
-    TruePeakChannel tp[2];
+    BiquadD kwProto[2];
+    BiquadPair kw[2]; // K-weighting stages 1 and 2, both channels
+    TruePeakStereo tps;
     VuBallistics vu;
 
     // Windows.

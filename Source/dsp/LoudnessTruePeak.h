@@ -178,60 +178,70 @@ private:
 };
 
 // Stereo interpolator for the meter. Same kernel, same dot products and same estimate as
-// TruePeakChannel (without refinement), but the skip bound is exact: the largest |sample| of the
-// last kTaps stereo pairs, which bounds every interpolated value of both channels. A tighter
-// bound only decides when the interpolation can be skipped, so the results do not change.
+// TruePeakChannel (without refinement). The skip bound is one number for both channels: the
+// largest |sample| of the last kTaps pairs, rounded up to whole 4-pair blocks, so it is only
+// ever looser (never tighter) than the window. A looser bound merely computes the interpolation
+// more often, so the results do not change.
+//
+// The ring position and block bookkeeping live in a small State that the caller copies into a
+// local for its inner loop, so the compiler can keep them in registers.
 class TruePeakStereo
 {
 public:
     static constexpr int T = TruePeakKernel::kTaps;
+    static constexpr int kBlock = 4;
+
+    struct State
+    {
+        int wi = 0, phase = 0, bi = 0;
+        float cur = 0.0f; // maximum of the partial block
+    };
 
     void reset() noexcept
     {
         std::fill (&hist[0][0], &hist[0][0] + 2 * 2 * T, 0.0f);
-        std::fill (std::begin (mx), std::end (mx), 0.0f);
-        wi = 0;
+        std::fill (std::begin (blk), std::end (blk), 0.0f);
+        state = State {};
     }
+
+    State getState() const noexcept { return state; }
+    void setState (const State& s) noexcept { state = s; }
 
     // Pushes one stereo pair (mono: pass the same sample twice).
-    void push (float l, float r) noexcept
+    void push (State& s, float l, float r) noexcept
     {
-        hist[0][wi] = hist[0][wi + T] = l;
-        hist[1][wi] = hist[1][wi + T] = r;
-        const float m = std::max (std::abs (l), std::abs (r));
-        mx[wi] = mx[wi + T] = m;
-        wi = (wi + 1 == T) ? 0 : wi + 1;
+        hist[0][s.wi] = hist[0][s.wi + T] = l;
+        hist[1][s.wi] = hist[1][s.wi + T] = r;
+        s.wi = (s.wi + 1 == T) ? 0 : s.wi + 1;
+        s.cur = std::max (s.cur, std::max (std::abs (l), std::abs (r)));
+        if (++s.phase == kBlock)
+        {
+            blk[s.bi] = s.cur;
+            s.bi = (s.bi + 1) & 3;
+            s.cur = 0.0f;
+            s.phase = 0;
+        }
     }
 
-    // Largest magnitude over the window, both channels (inputs are finite).
-    float windowMax() const noexcept
+    // Upper bound on |interpolated value| / l1 for both channels. The last kTaps pairs lie inside
+    // the four completed blocks plus the partial one.
+    float windowMax (const State& s) const noexcept
     {
-        const float* w = mx + wi;
-#if JUCE_USE_SSE_INTRINSICS
-        __m128 v = _mm_max_ps (_mm_loadu_ps (w), _mm_loadu_ps (w + 4));
-        v = _mm_max_ps (v, _mm_max_ps (_mm_loadu_ps (w + 8), _mm_loadu_ps (w + 12)));
-        v = _mm_max_ps (v, _mm_movehl_ps (v, v));
-        v = _mm_max_ss (v, _mm_shuffle_ps (v, v, 1));
-        return _mm_cvtss_f32 (v);
-#else
-        float m = 0.0f;
-        for (int j = 0; j < T; ++j) m = std::max (m, w[j]);
-        return m;
-#endif
+        return std::max (s.cur, std::max (std::max (blk[0], blk[1]), std::max (blk[2], blk[3])));
     }
 
     // Peak magnitude of the interpolated channel `ch` at the newest slot (phase 0 is the slot itself).
-    float slotPeak (const TruePeakKernel& k, int ch) const noexcept
+    float slotPeak (const State& s, const TruePeakKernel& k, int ch) const noexcept
     {
-        const float* w = hist[ch] + wi;
+        const float* w = hist[ch] + s.wi;
         float best = std::abs (w[TruePeakKernel::kHalf - 1]);
         for (int p = 1; p < k.phases; ++p) best = std::max (best, std::abs (truePeakDot (k.h[p], w)));
         return best;
     }
 
 private:
-    float hist[2][2 * T] {};
-    float mx[2 * T] {};
-    int wi = 0;
+    float hist[2][2 * T] {}; // each channel twice, so the window is contiguous
+    float blk[4] {};         // maxima of the last four completed blocks
+    State state;
 };
 } // namespace nl

@@ -2,7 +2,12 @@
 
 #include "Common.h"
 #include "Filters.h"
+#include <juce_core/juce_core.h>
 #include <cmath>
+
+#if JUCE_USE_SSE_INTRINSICS
+ #include <emmintrin.h>
+#endif
 
 namespace nl
 {
@@ -36,34 +41,53 @@ struct KWeighting
     }
 };
 
-// A K-weighting biquad in direct form I, for the meter's inner loop. Same transfer function as
-// BiquadD, but the feedback chain is one multiply and one add per sample (the feed-forward part
-// is computed off the chain), so two stages and two channels overlap well in the pipeline.
-struct DirectForm1
+// Two doubles, one per stereo channel. SSE2 on x64 (always available there), scalar elsewhere.
+// Every operation is lane-wise, so a lane computes exactly what the scalar code would.
+struct Pair2
 {
-    double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+#if JUCE_USE_SSE_INTRINSICS
+    __m128d v;
+    static Pair2 make (double lane0, double lane1) noexcept { return { _mm_set_pd (lane1, lane0) }; }
+    double lane (int i) const noexcept { return i == 0 ? _mm_cvtsd_f64 (v) : _mm_cvtsd_f64 (_mm_unpackhi_pd (v, v)); }
+    friend Pair2 operator+ (Pair2 a, Pair2 b) noexcept { return { _mm_add_pd (a.v, b.v) }; }
+    friend Pair2 operator- (Pair2 a, Pair2 b) noexcept { return { _mm_sub_pd (a.v, b.v) }; }
+    friend Pair2 operator* (Pair2 a, Pair2 b) noexcept { return { _mm_mul_pd (a.v, b.v) }; }
+#else
+    double d[2] {};
+    static Pair2 make (double lane0, double lane1) noexcept { return { { lane0, lane1 } }; }
+    double lane (int i) const noexcept { return d[i]; }
+    friend Pair2 operator+ (Pair2 a, Pair2 b) noexcept { return { { a.d[0] + b.d[0], a.d[1] + b.d[1] } }; }
+    friend Pair2 operator- (Pair2 a, Pair2 b) noexcept { return { { a.d[0] - b.d[0], a.d[1] - b.d[1] } }; }
+    friend Pair2 operator* (Pair2 a, Pair2 b) noexcept { return { { a.d[0] * b.d[0], a.d[1] * b.d[1] } }; }
+#endif
+};
+
+// BiquadD for two channels at once: the same recursion as BiquadD in each lane.
+struct BiquadPair
+{
+    Pair2 b0, b1, b2, a1, a2, z1, z2;
 
     void setup (const BiquadD& c) noexcept
     {
-        b0 = c.b0;
-        b1 = c.b1;
-        b2 = c.b2;
-        a1 = c.a1;
-        a2 = c.a2;
+        b0 = Pair2::make (c.b0, c.b0);
+        b1 = Pair2::make (c.b1, c.b1);
+        b2 = Pair2::make (c.b2, c.b2);
+        a1 = Pair2::make (c.a1, c.a1);
+        a2 = Pair2::make (c.a2, c.a2);
         reset();
     }
 
-    void reset() noexcept { x1 = x2 = y1 = y2 = 0.0; }
-
-    inline double process (double x) noexcept
+    void reset() noexcept
     {
-        const double ff = b0 * x + b1 * x1 + b2 * x2;
-        const double y = (ff - a2 * y2) - a1 * y1;
-        x2 = x1;
-        x1 = x;
-        y2 = y1;
-        y1 = y;
+        z1 = Pair2::make (0.0, 0.0);
+        z2 = Pair2::make (0.0, 0.0);
+    }
+
+    inline Pair2 process (Pair2 x) noexcept
+    {
+        const Pair2 y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
         return y;
     }
 };
