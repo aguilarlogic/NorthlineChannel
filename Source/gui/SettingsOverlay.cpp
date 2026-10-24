@@ -83,7 +83,13 @@ void SettingsOverlay::resized()
     // Title row and sections are laid out from the top of the panel.
     p.removeFromTop (30);
     auto row = [&] (int y, int h = 26) { return juce::Rectangle<int> (p.getX(), p.getY() + y, p.getWidth(), h); };
-    auto half = [] (juce::Rectangle<int> r) { return std::make_pair (r.removeFromLeft (r.getWidth() / 2 - 3), r.withTrimmedLeft (6)); };
+    // Two equal halves with a 6 px gap. Split in sequence: argument evaluation order is unspecified.
+    auto half = [] (juce::Rectangle<int> r)
+    {
+        auto left = r.removeFromLeft (r.getWidth() / 2 - 3);
+        r.removeFromLeft (6);
+        return std::make_pair (left, r);
+    };
 
     auto t = half (row (14));
     themeDark.setBounds (t.first);
@@ -140,7 +146,7 @@ void SettingsOverlay::paint (juce::Graphics& g)
 
     g.setColour (colours::faint);
     g.setFont (NorthlineLookAndFeel::font (tokens::type::label));
-    g.drawText ("Console layout puts all five modules side by side. The default size applies to instances that have not been sized yet.",
+    g.drawText ("Console shows all five modules side by side. The default size applies to new instances.",
                 juce::Rectangle<int> (p.getX(), p.getY() + 276, p.getWidth(), 26), juce::Justification::centredLeft);
 }
 
