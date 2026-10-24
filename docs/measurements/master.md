@@ -2,7 +2,7 @@
 
 Limiter modes (latency, true peak, THD, release), EBU 3341/3342 conformance table, MeterHub CPU
 
-Build: Oct 23 2026, AMD Ryzen 7 9800X3D 8-Core Processor
+Build: Oct 24 2026, AMD Ryzen 7 9800X3D 8-Core Processor
 
 ## Limiter latency
 
@@ -159,15 +159,15 @@ Percentage of one core (best of several runs), stereo, 64-sample blocks, loud pi
 
 | Configuration | 48 kHz | 96 kHz |
 |---|---|---|
-| MeterHub, stereo, peaks at -1 dBFS | 0.077 % | 0.140 % |
-| MeterHub, stereo, peaks at -20 dBFS | 0.078 % | 0.141 % |
-| MeterHub, mono, peaks at -1 dBFS | 0.049 % | 0.085 % |
-| MasterSection (limiter + MeterHub), Safety Clip Eco, LIMIT on, +10 dB drive | 0.242 % | 0.459 % |
-| MasterSection, Safety Clip Eco, LIMIT off | 0.090 % | 0.164 % |
-| MasterSection (limiter + MeterHub), Safety Clip HQ, LIMIT on, +10 dB drive | 1.173 % | 2.261 % |
-| MasterSection, Safety Clip HQ, LIMIT off | 0.089 % | 0.164 % |
-| MasterSection (limiter + MeterHub), Brickwall, LIMIT on, +10 dB drive | 0.159 % | 0.286 % |
-| MasterSection, Brickwall, LIMIT off | 0.100 % | 0.176 % |
-| MasterSection (limiter + MeterHub), True Peak, LIMIT on, +10 dB drive | 0.454 % | 0.701 % |
-| MasterSection, True Peak, LIMIT off | 0.091 % | 0.167 % |
+| MeterHub, stereo, peaks at -1 dBFS | 0.088 % | 0.150 % |
+| MeterHub, stereo, peaks at -20 dBFS | 0.097 % | 0.197 % |
+| MeterHub, mono, peaks at -1 dBFS | 0.114 % | 0.105 % |
+| MasterSection (limiter + MeterHub), Safety Clip Eco, LIMIT on, +10 dB drive | 0.241 % | 0.392 % |
+| MasterSection, Safety Clip Eco, LIMIT off | 0.070 % | 0.128 % |
+| MasterSection (limiter + MeterHub), Safety Clip HQ, LIMIT on, +10 dB drive | 0.985 % | 1.916 % |
+| MasterSection, Safety Clip HQ, LIMIT off | 0.063 % | 0.121 % |
+| MasterSection (limiter + MeterHub), Brickwall, LIMIT on, +10 dB drive | 0.137 % | 0.228 % |
+| MasterSection, Brickwall, LIMIT off | 0.066 % | 0.126 % |
+| MasterSection (limiter + MeterHub), True Peak, LIMIT on, +10 dB drive | 0.419 % | 0.642 % |
+| MasterSection, True Peak, LIMIT off | 0.065 % | 0.124 % |
 

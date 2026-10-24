@@ -4,9 +4,11 @@ namespace nl
 {
 namespace
 {
-constexpr int kHeader = 32, kPad = 8, kKnobH = 64, kRowH = 22, kGap = 6;
-
-juce::String fmtLufs (double v) { return v <= -199.0 ? juce::String ("-inf") : juce::String (v, 1); }
+constexpr int kHeader = 32, kPad = 8, kGap = 4, kKnobH = 56, kRowH = 20, kLabelH = 14;
+constexpr int kMeterH = 132, kGrH = 24, kHistH = 48, kLoudH = 132, kCorrH = 18;
+constexpr int kMeterScaleW = 22, kMeterW = 40, kTrimW = 84, kCustomBtnW = 22, kResetW = 46, kOptionsW = 60;
+constexpr float kScopeShare = 0.38f;   // share of the column given to the vectorscope
+constexpr float kVuSmoothing = 0.36f;  // VU ballistics for the input and GR sources (about 300 ms at 30 Hz)
 } // namespace
 
 MasterPanel::MasterPanel (NorthlineProcessor& p) : proc (p)
@@ -17,6 +19,7 @@ MasterPanel::MasterPanel (NorthlineProcessor& p) : proc (p)
     vuRef = add<Knob> (p, P::opLevel, "Op Level", a);
     phase = add<ChoiceBox> (p, P::inPolarity);
     vuSource = add<ChoiceBox> (p, P::vuSource);
+    monitor = add<ChoiceBox> (p, P::monitor);
     limOn = add<Chip> (p, P::limOn, "LIMIT", a);
     lookahead = add<ChoiceBox> (p, P::limMode);
     lookahead->setTooltip ("Limiter mode. Safety Clip: zero latency. Brickwall / True Peak: 1.5 ms lookahead, reported to the host");
@@ -24,13 +27,46 @@ MasterPanel::MasterPanel (NorthlineProcessor& p) : proc (p)
     limRelease = add<Knob> (p, P::limRelease, "Release", a);
     match = add<ChoiceBox> (p, P::matchMode);
     match->setTooltip ("Matches output loudness to input loudness so you judge processing, not volume");
-    monitor = add<ChoiceBox> (p, P::monitor);
-    for (auto* c : std::initializer_list<juce::Component*> { &inMeter, &outMeter, &vu, &limGr, &resetLoudness })
+    matchTrim = add<Knob> (p, P::matchTrim, "Trim", a);
+
+    for (auto* c : std::initializer_list<juce::Component*> { &inMeter, &outMeter, &meterScale, &vu, &limGr, &grHistory, &scope, &correlation, &matchView,
+                                                              &readouts, &targetBox, &customDown, &customUp, &resetButton, &optionsButton, &relearnButton })
         addAndMakeVisible (c);
-    resetLoudness.setTooltip ("Reset integrated loudness and true-peak hold");
-    resetLoudness.onClick = [this] { if (onResetLoudness) onResetLoudness(); };
+
+    inMeter.setTitle ("IN");
+    outMeter.setTitle ("OUT");
     inMeter.setTooltip ("Input peak / RMS (click to clear clip)");
     outMeter.setTooltip ("Output peak / RMS (click to clear clip)");
+    vu.setLabel ("VU OUT");
+    limGr.setTooltip ("Limiter gain reduction (the number is the deepest reduction shown)");
+    scope.setTooltip ("Vectorscope: left and right, rotated 45 degrees. Mono is a vertical line");
+    correlation.setTooltip ("Correlation of left and right: +1 mono, 0 wide, -1 out of phase");
+
+    for (int i = 0; i < loudness::kNumTargets; ++i)
+        targetBox.addItem (loudness::kTargets[i].name + juce::String (i == loudness::kCustomTarget ? "" : "  " + juce::String (loudness::kTargets[i].integratedLufs, 0) + " LUFS / "
+                                                                       + juce::String (loudness::kTargets[i].truePeakDb, 0) + " dBTP"),
+                           i + 1);
+    targetBox.setSelectedId (targetIndex + 1, juce::dontSendNotification);
+    targetBox.setTooltip ("Loudness target: integrated loudness and true-peak ceiling");
+    targetBox.onChange = [this] { selectTarget (targetBox.getSelectedId() - 1); };
+    customDown.setTooltip ("Custom target: down 0.5 LU");
+    customUp.setTooltip ("Custom target: up 0.5 LU");
+    customDown.onClick = [this] { customLufs = loudness::clampCustom (customLufs - loudness::kCustomStepLu); };
+    customUp.onClick = [this] { customLufs = loudness::clampCustom (customLufs + loudness::kCustomStepLu); };
+    resetButton.setTooltip ("Reset integrated loudness, LRA, maxima and the overs counter");
+    resetButton.onClick = [this] { proc.getStrip().meterHub().resetIntegrated(); };
+    optionsButton.setTooltip ("Loudness integration options");
+    optionsButton.onClick = [this] { showOptionsMenu(); };
+    relearnButton.setTooltip ("Restart the Level Match learn pass");
+    relearnButton.onClick = [this] { proc.relearnLevelMatch(); };
+    selectTarget (targetIndex);
+
+    startTimerHz (30);
+}
+
+MasterPanel::~MasterPanel()
+{
+    stopTimer();
 }
 
 void MasterPanel::paint (juce::Graphics& g)
@@ -48,110 +84,177 @@ void MasterPanel::paint (juce::Graphics& g)
     g.drawText ("MASTER", getLocalBounds().removeFromTop (kHeader).reduced (10, 0), juce::Justification::centredLeft);
 
     for (auto& [lr, text] : labels) drawSectionLabel (g, lr, text, colours::master);
-
-    g.setFont (NorthlineLookAndFeel::font (10.0f, true));
-    g.setColour (colours::dim);
-    auto ml = meterLabelArea;
-    g.drawText ("IN", ml.removeFromLeft (ml.getWidth() / 2), juce::Justification::centred);
-    g.drawText ("OUT", ml, juce::Justification::centred);
-
-    // Loudness readouts.
-    auto la = loudnessArea;
-    auto cell = [&] (juce::Rectangle<int> c, const juce::String& name, const juce::String& value, const juce::String& unit)
-    {
-        g.setColour (colours::dim);
-        g.setFont (NorthlineLookAndFeel::font (10.0f, true));
-        g.drawText (name, c.removeFromTop (12), juce::Justification::centredLeft);
-        g.setColour (colours::text);
-        g.setFont (NorthlineLookAndFeel::font (15.0f, true));
-        g.drawText (value, c.removeFromLeft (52), juce::Justification::centredLeft);
-        g.setColour (colours::faint);
-        g.setFont (NorthlineLookAndFeel::font (10.0f));
-        g.drawText (unit, c, juce::Justification::centredLeft);
-    };
-    auto r1 = la.removeFromTop (30);
-    cell (r1.removeFromLeft (r1.getWidth() / 2), "MOMENTARY", lufsM, "LUFS");
-    cell (r1, "SHORT-TERM", lufsS, "LUFS");
-    auto r2 = la.removeFromTop (30);
-    cell (r2.removeFromLeft (r2.getWidth() / 2), "INTEGRATED", lufsI, "LUFS");
-    cell (r2, "TRUE PEAK", tp, "dBTP");
-    la.removeFromTop (4);
-    auto cr = la.removeFromTop (12).toFloat();
-    g.setColour (colours::dim);
-    g.setFont (NorthlineLookAndFeel::font (10.0f, true));
-    g.drawText ("CORR", cr.removeFromLeft (34.0f), juce::Justification::centredLeft);
-    g.setColour (colours::track);
-    g.fillRoundedRectangle (cr, 2.0f);
-    const float cx = cr.getCentreX(), px = cx + corr * cr.getWidth() * 0.5f;
-    g.setColour (corr < 0.0f ? colours::meterRed : colours::meterGreen);
-    g.fillRect (juce::Rectangle<float>::leftTopRightBottom (juce::jmin (cx, px), cr.getY(), juce::jmax (cx, px), cr.getBottom()));
-    g.setColour (colours::text.withAlpha (0.5f));
-    g.drawVerticalLine ((int) cx, cr.getY(), cr.getBottom());
 }
 
 void MasterPanel::resized()
 {
     labels.clear();
-    auto r = getLocalBounds();
-    r.removeFromTop (kHeader);
-    r = r.reduced (kPad, kGap);
+    blocks.clear();
+    layoutBlocksFrom (getLocalBounds());
+}
 
+void MasterPanel::layoutBlocksFrom (juce::Rectangle<int> whole)
+{
+    auto r = whole;
+    r.removeFromTop (kHeader + kGap);
+    r = r.reduced (kPad, 0);
+    r.removeFromBottom (kPad);
+
+    // Gains: input, output, operating level.
     {
-        auto k = r.removeFromTop (kKnobH);
-        const int w = k.getWidth() / 3;
-        inGain->setBounds (k.removeFromLeft (w));
-        outGain->setBounds (k.removeFromLeft (w));
-        vuRef->setBounds (k);
-    }
-    r.removeFromTop (4);
-    {
-        auto row = r.removeFromTop (kRowH);
-        phase->setBounds (row.removeFromLeft (row.getWidth() / 2 - 2));
-        row.removeFromLeft (4);
-        vuSource->setBounds (row);
-    }
-    r.removeFromTop (kGap);
-    {
-        auto m = r.removeFromTop (128);
-        auto meters = m.removeFromLeft (64);
-        meterLabelArea = meters.removeFromBottom (12);
-        inMeter.setBounds (meters.removeFromLeft (30));
-        meters.removeFromLeft (4);
-        outMeter.setBounds (meters.removeFromLeft (30));
-        m.removeFromLeft (8);
-        vu.setBounds (m.withSizeKeepingCentre (m.getWidth(), juce::jmin (m.getHeight(), 96)));
+        auto gains = r.removeFromTop (kKnobH);
+        blocks.push_back ({ "gains", gains });
+        const int third = gains.getWidth() / 3;
+        inGain->setBounds (gains.removeFromLeft (third));
+        outGain->setBounds (gains.removeFromLeft (third));
+        vuRef->setBounds (gains);
     }
     r.removeFromTop (kGap);
 
-    labels.push_back ({ r.removeFromTop (14), "LIMITER" });
-    r.removeFromTop (4);
+    // Polarity, VU source, monitor.
     {
+        auto choices = r.removeFromTop (kRowH);
+        blocks.push_back ({ "choices", choices });
+        const int w = (choices.getWidth() - 2 * kGap) / 3;
+        phase->setBounds (choices.removeFromLeft (w));
+        choices.removeFromLeft (kGap);
+        vuSource->setBounds (choices.removeFromLeft (w));
+        choices.removeFromLeft (kGap);
+        monitor->setBounds (choices);
+    }
+    r.removeFromTop (kGap);
+
+    // Level meters (IN, OUT) with their dB scale, and the VU needle.
+    {
+        auto meters = r.removeFromTop (kMeterH);
+        blocks.push_back ({ "meters", meters });
+        meterScale.setBounds (meters.removeFromLeft (kMeterScaleW));
+        inMeter.setBounds (meters.removeFromLeft (kMeterW));
+        meters.removeFromLeft (kGap);
+        outMeter.setBounds (meters.removeFromLeft (kMeterW));
+        meters.removeFromLeft (8);
+        vu.setBounds (meters);
+    }
+    r.removeFromTop (kGap);
+
+    // Limiter: mode, ceiling, release, gain reduction bar and the 10 s history.
+    {
+        labels.push_back ({ r.removeFromTop (kLabelH), "LIMITER" });
+        r.removeFromTop (2);
         auto row = r.removeFromTop (kRowH);
         limOn->setBounds (row.removeFromLeft (row.getWidth() * 2 / 5));
-        row.removeFromLeft (4);
+        row.removeFromLeft (kGap);
         lookahead->setBounds (row);
+        r.removeFromTop (2);
+        auto knobs = r.removeFromTop (kKnobH);
+        blocks.push_back ({ "limiter", knobs });
+        ceiling->setBounds (knobs.removeFromLeft (knobs.getWidth() / 2));
+        limRelease->setBounds (knobs);
+        r.removeFromTop (2);
+        limGr.setBounds (r.removeFromTop (kGrH));
+        r.removeFromTop (kGap);
+        auto hist = r.removeFromTop (kHistH);
+        blocks.push_back ({ "history", hist });
+        grHistory.setBounds (hist);
+        r.removeFromTop (kGap);
     }
-    r.removeFromTop (4);
+
+    // Level Match: mode and relearn, then the trim and the status.
     {
-        auto k = r.removeFromTop (kKnobH);
-        ceiling->setBounds (k.removeFromLeft (k.getWidth() / 2));
-        limRelease->setBounds (k);
-    }
-    r.removeFromTop (3);
-    limGr.setBounds (r.removeFromTop (11));
-    r.removeFromTop (kGap);
-    {
+        labels.push_back ({ r.removeFromTop (kLabelH), "LEVEL MATCH" });
+        r.removeFromTop (2);
         auto row = r.removeFromTop (kRowH);
-        match->setBounds (row.removeFromLeft (row.getWidth() / 2 - 2));
-        row.removeFromLeft (4);
-        monitor->setBounds (row);
+        match->setBounds (row.removeFromLeft (row.getWidth() / 2));
+        row.removeFromLeft (kGap);
+        relearnButton.setBounds (row);
+        r.removeFromTop (2);
+        auto area = r.removeFromTop (kKnobH);
+        blocks.push_back ({ "match", area });
+        matchTrim->setBounds (area.removeFromLeft (kTrimW));
+        area.removeFromLeft (kGap);
+        matchView.setBounds (area.withTrimmedTop (8));
+        r.removeFromTop (kGap);
     }
-    r.removeFromTop (kGap);
-    auto lh = r.removeFromTop (14);
-    resetLoudness.setBounds (lh.removeFromRight (48).withSizeKeepingCentre (48, 14));
-    labels.push_back ({ lh, "LOUDNESS" });
-    r.removeFromTop (4);
-    loudnessArea = r.removeFromTop (82);
+
+    // Loudness: label with RESET and OPTIONS, target selector, readouts, vectorscope and correlation.
+    {
+        auto labelRow = r.removeFromTop (kLabelH);
+        optionsButton.setBounds (labelRow.removeFromRight (kOptionsW).withSizeKeepingCentre (kOptionsW, kLabelH));
+        resetButton.setBounds (labelRow.removeFromRight (kResetW).withSizeKeepingCentre (kResetW, kLabelH));
+        labels.push_back ({ labelRow.withTrimmedRight (4), "LOUDNESS" });
+        r.removeFromTop (2);
+
+        const bool custom = targetIndex == loudness::kCustomTarget;
+        auto tRow = r.removeFromTop (kRowH);
+        customUp.setVisible (custom);
+        customDown.setVisible (custom);
+        if (custom)
+        {
+            customUp.setBounds (tRow.removeFromRight (kCustomBtnW));
+            tRow.removeFromRight (2);
+            customDown.setBounds (tRow.removeFromRight (kCustomBtnW));
+            tRow.removeFromRight (kGap);
+        }
+        targetBox.setBounds (tRow);
+        r.removeFromTop (2);
+
+        auto loud = r.removeFromTop (kLoudH);
+        blocks.push_back ({ "loudness", loud });
+        auto sc = loud.removeFromRight (juce::roundToInt ((float) loud.getWidth() * kScopeShare));
+        loud.removeFromRight (kGap + 2);
+        readouts.setBounds (loud);
+        blocks.push_back ({ "readouts", loud });
+
+        scopeArea = sc;
+        auto corr = sc.removeFromBottom (kCorrH);
+        const int side = juce::jmin (sc.getWidth(), sc.getHeight());
+        scope.setBounds (sc.withSizeKeepingCentre (side, side));
+        correlation.setBounds (corr);
+        blocks.push_back ({ "scope", scope.getBounds() });
+        blocks.push_back ({ "correlation", corr });
+    }
+}
+
+void MasterPanel::setTarget (int index, double customTargetLufs)
+{
+    customLufs = loudness::clampCustom (customTargetLufs);
+    targetBox.setSelectedId (juce::jlimit (0, loudness::kNumTargets - 1, index) + 1, juce::dontSendNotification);
+    selectTarget (index);
+}
+
+void MasterPanel::selectTarget (int index)
+{
+    targetIndex = juce::jlimit (0, loudness::kNumTargets - 1, index);
+    resized();
+    repaint();
+}
+
+void MasterPanel::showOptionsMenu()
+{
+    auto& hub = proc.getStrip().meterHub();
+    juce::PopupMenu menu;
+    menu.addItem (1, "Pause integration when transport stops", true, hub.pauseIntegrationWhenStopped());
+    menu.addItem (2, "Reset on play", true, hub.resetIntegrationOnPlay());
+    juce::Component::SafePointer<MasterPanel> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&optionsButton), [safe] (int result)
+    {
+        if (safe == nullptr) return;
+        auto& h = safe->proc.getStrip().meterHub();
+        if (result == 1) h.setPauseIntegrationWhenStopped (! h.pauseIntegrationWhenStopped());
+        if (result == 2) h.setResetIntegrationOnPlay (! h.resetIntegrationOnPlay());
+    });
+}
+
+int MasterPanel::vuSourceIndex() const
+{
+    auto* prm = proc.param (P::vuSource);
+    return (int) std::lround (prm->convertFrom0to1 (prm->getValue()));
+}
+
+float MasterPanel::opLevelDb() const
+{
+    auto* prm = proc.param (P::opLevel);
+    return prm->convertFrom0to1 (prm->getValue());
 }
 
 void MasterPanel::updateMeters (const MeterSummary& m)
@@ -160,8 +263,11 @@ void MasterPanel::updateMeters (const MeterSummary& m)
     outMeter.setLevels (m.outPeak[0], m.outPeak[1], m.outRms[0], m.outRms[1]);
     limGr.setGr (m.limGr);
 
-    const int src = (int) std::lround (proc.param (P::vuSource)->convertFrom0to1 (proc.param (P::vuSource)->getValue()));
-    const float ref = proc.param (P::opLevel)->convertFrom0to1 (proc.param (P::opLevel)->getValue());
+    const int src = vuSourceIndex();
+    const float ref = opLevelDb();
+    vu.setReference (ref);
+    if (src == 1) return; // output VU: the MeterHub's calibrated ballistics, read by the timer
+
     float target;
     if (src == 2)
     {
@@ -170,24 +276,38 @@ void MasterPanel::updateMeters (const MeterSummary& m)
     }
     else
     {
-        const float* rms = src == 0 ? m.inRms : m.outRms;
-        const float power = 0.5f * (rms[0] * rms[0] + rms[1] * rms[1]);
+        const float power = 0.5f * (m.inRms[0] * m.inRms[0] + m.inRms[1] * m.inRms[1]);
         target = 10.0f * std::log10 (std::max (power, 1.0e-12f)) - ref;
-        vu.setLabel (src == 0 ? "VU IN" : "VU OUT");
+        vu.setLabel ("VU IN");
     }
-    // VU ballistics: ~300 ms to 99 % at a 30 Hz refresh.
-    vuValue += (target - vuValue) * 0.36f;
+    vuValue += (target - vuValue) * kVuSmoothing;
     vu.setValue (vuValue);
 }
 
-void MasterPanel::updateLoudness (double momentary, double shortTerm, double integrated, float truePeak, float correlation)
+void MasterPanel::updateLoudness (double, double, double, float, float) {}
+
+void MasterPanel::timerCallback()
 {
-    const auto m = fmtLufs (momentary), s = fmtLufs (shortTerm), i = fmtLufs (integrated);
-    const auto t = truePeak <= -199.0f ? juce::String ("-inf") : juce::String (truePeak, 1);
-    if (m != lufsM || s != lufsS || i != lufsI || t != tp || std::abs (correlation - corr) > 0.01f)
+    auto& hub = proc.getStrip().meterHub();
+    const MeterSnapshot s = hub.read();
+
+    if (vuSourceIndex() == 1) vu.setValue (s.vuDb - opLevelDb());
+
+    correlation.setValue (s.correlation);
+
+    loudness::Target target = loudness::kTargets[(size_t) targetIndex];
+    if (targetIndex == loudness::kCustomTarget) target.integratedLufs = customLufs;
+    readouts.setValues ({ s.momentary, s.shortTerm, s.integrated, s.lra, s.truePeakDb, s.plr, s.overs }, target);
+
+    grHistory.setHistory (grBuf.data(), hub.readGrHistory (grBuf.data(), (int) grBuf.size()));
+
+    for (;;)
     {
-        lufsM = m; lufsS = s; lufsI = i; tp = t; corr = correlation;
-        repaint (loudnessArea);
+        const size_t got = hub.scope().pop (scopeBuf.data(), scopeBuf.size());
+        if (got > 0) scope.pushPairs (scopeBuf.data(), got);
+        if (got < scopeBuf.size()) break;
     }
+
+    matchView.setStatus (proc.getLevelMatchStatus());
 }
 } // namespace nl
