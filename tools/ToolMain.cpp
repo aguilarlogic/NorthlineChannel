@@ -102,6 +102,7 @@ int main (int argc, char* argv[])
     if (cmd == "measure") return tool::runMeasure (args);
     if (cmd == "bench" || cmd == "host-bench") return tool::runBench (args);
     if (cmd == "validate") return tool::runValidate (args);
+    if (cmd == "pre-bench") return tool::runPreBench (args);
     if (cmd == "snapshot" && args.size() > 1)
         return tool::snapshot (juce::File::getCurrentWorkingDirectory().getChildFile (args[1]), args.size() > 2 ? args[2].getIntValue() : 1, args[3]);
 
@@ -110,6 +111,8 @@ int main (int argc, char* argv[])
                  "  measure <suite|all|list> [--out dir] [--quick]\n"
                  "                               run measurement suites and write Markdown reports\n"
                  "  bench [--quick]              CPU benchmark of Northline Channel (in-process)\n"
+                 "  pre-bench time | stages | dump|null <file> | strip-dump|strip-null <file>\n"
+                 "                               PRE CPU per block, per-stage CPU, reference dump and null check\n"
                  "  host-bench <file.vst3> [name-filter] [--quick]\n"
                  "                               load any VST3 (e.g. a competitor strip) and benchmark it the same way\n"
                  "  validate [file.vst3] [--quick] [--seed N]\n"

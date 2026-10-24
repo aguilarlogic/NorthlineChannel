@@ -126,11 +126,26 @@ inline std::vector<float> padCoefs (const std::vector<double>& h, int& padded)
     return c;
 }
 
-// Interpolate by 2: n inputs -> 2n outputs, polyphase (even / odd taps).
+// acc[i] += c * (a[i] + b[i]): the two taps of a symmetric pair share one multiplication.
+inline void accumulatePair (float* acc, const float* a, const float* b, float c, int n) noexcept
+{
+    for (int i = 0; i < n; ++i) acc[i] += c * (a[i] + b[i]);
+}
+
+// Output i of a symmetric phase with L taps c (c[k] == c[L-1-k]): sum over k of c[k] * x[i - (L-1) + k], where
+// x[0 .. n) is the new input and the L-1 samples before it are history. Each pair (k, L-1-k) is one product.
+inline void symmetricPhase (const float* c, int L, const float* x, float* acc, int n) noexcept
+{
+    for (int k = 0; k < L / 2; ++k) accumulatePair (acc, x + 1 - L + k, x - k, c[k], n);
+    if (L & 1) accumulateTap (acc, x - (L - 1) / 2, c[(L - 1) / 2], n);
+}
+
+// Interpolate by 2: n inputs -> 2n outputs, polyphase (even / odd taps). The prototype is linear phase, so both
+// phases are symmetric and each output takes one product per tap pair (81 products per input instead of 81 + 21).
 struct Up2
 {
     std::vector<float> even, odd;
-    int pe = 0, po = 0;
+    int le = 0, lo = 0;
     History hist;
     std::vector<float> accE, accO; // scratch, sized in design()
 
@@ -138,9 +153,13 @@ struct Up2
     {
         std::vector<double> e, o;
         for (size_t k = 0; k < h.size(); ++k) (k % 2 == 0 ? e : o).push_back (h[k]);
-        even = padCoefs (e, pe);
-        odd = padCoefs (o, po);
-        hist.allocate (std::max (pe, po), maxIn);
+        even.resize (e.size());
+        odd.resize (o.size());
+        for (size_t k = 0; k < e.size(); ++k) even[k] = (float) e[k];
+        for (size_t k = 0; k < o.size(); ++k) odd[k] = (float) o[k];
+        le = (int) e.size();
+        lo = (int) o.size();
+        hist.allocate (std::max (le, lo), maxIn);
         accE.assign ((size_t) maxIn, 0.0f);
         accO.assign ((size_t) maxIn, 0.0f);
     }
@@ -152,9 +171,8 @@ struct Up2
         std::memcpy (x, in, sizeof (float) * (size_t) n);
         std::fill (accE.begin(), accE.begin() + n, 0.0f);
         std::fill (accO.begin(), accO.begin() + n, 0.0f);
-        // output i of a phase: the window that ends at x[i] (its most recent sample meets the first tap)
-        for (int k = 0; k < pe; ++k) accumulateTap (accE.data(), x + 1 - pe + k, even[(size_t) k], n);
-        for (int k = 0; k < po; ++k) accumulateTap (accO.data(), x + 1 - po + k, odd[(size_t) k], n);
+        symmetricPhase (even.data(), le, x, accE.data(), n);
+        symmetricPhase (odd.data(), lo, x, accO.data(), n);
         for (int i = 0; i < n; ++i)
         {
             out[2 * i] = accE[(size_t) i];
@@ -164,44 +182,44 @@ struct Up2
     }
 };
 
-// Decimate by 2: 2n inputs -> n outputs.
+// Decimate by 2: 2n inputs -> n outputs. The prototype is symmetric (odd length L), so each output takes one
+// product per tap pair: out[i] = sum_k taps[k] * ext[2i + k] + middle tap, with ext[j] = the input at j + 1 - L.
+// Splitting ext into even and odd samples, ext[2i + k] = phase(k & 1)[i + (k >> 1)], so each pair is a
+// contiguous pass over the outputs.
 struct Down2
 {
     std::vector<float> taps;
-    int pt = 0;
+    int L = 0;
     History hist;
     std::vector<float> phase0, phase1, acc; // scratch, sized in design()
 
     void design (const std::vector<double>& h, int maxOut)
     {
-        taps = padCoefs (h, pt);
-        hist.allocate (pt, 2 * maxOut);
-        phase0.assign ((size_t) (maxOut + pt), 0.0f);
-        phase1.assign ((size_t) (maxOut + pt), 0.0f);
+        taps.resize (h.size());
+        for (size_t k = 0; k < h.size(); ++k) taps[k] = (float) h[k];
+        L = (int) h.size();
+        hist.allocate (L - 1, 2 * maxOut);
+        phase0.assign ((size_t) (maxOut + L), 0.0f);
+        phase1.assign ((size_t) (maxOut + L), 0.0f);
         acc.assign ((size_t) maxOut, 0.0f);
     }
     void reset() { hist.clear(); }
 
-    // out[i] = sum_k taps[k] * win[2i + k] with win = the window that starts pt - 1 samples before the new
-    // input. Splitting win into even and odd samples, win[2i + k] = phase(k & 1)[i + (k >> 1)], so each tap
-    // is a contiguous pass over the outputs.
     void process (const float* in, float* out, int n) noexcept
     {
         float* x = hist.head();
         std::memcpy (x, in, sizeof (float) * (size_t) (2 * n));
-        const float* win = x + 1 - pt;
-        const int len = n + ((pt - 1) >> 1);
+        const float* ext = x + 1 - L;
+        const int len = n + (L - 1) / 2; // phase entries the outputs read: up to ext[2n + L - 3]
         for (int m = 0; m < len; ++m)
         {
-            phase0[(size_t) m] = win[2 * m];
-            phase1[(size_t) m] = win[2 * m + 1];
+            phase0[(size_t) m] = ext[2 * m];
+            phase1[(size_t) m] = ext[2 * m + 1];
         }
         std::fill (acc.begin(), acc.begin() + n, 0.0f);
-        for (int k = 0; k < pt; ++k)
-        {
-            const float* src = (k & 1 ? phase1.data() : phase0.data()) + (k >> 1);
-            accumulateTap (acc.data(), src, taps[(size_t) k], n);
-        }
+        auto ph = [&] (int k) { return (k & 1 ? phase1.data() : phase0.data()) + (k >> 1); };
+        for (int k = 0; k < (L - 1) / 2; ++k) accumulatePair (acc.data(), ph (k), ph (L - 1 - k), taps[(size_t) k], n);
+        accumulateTap (acc.data(), ph ((L - 1) / 2), taps[(size_t) ((L - 1) / 2)], n);
         std::memcpy (out, acc.data(), sizeof (float) * (size_t) n);
         hist.commit (2 * n);
     }
@@ -240,11 +258,13 @@ public:
 
     void reset()
     {
-        for (int c = 0; c < channels; ++c)
-        {
-            auto& s = st[c];
-            s.upTight.reset(); s.upWide.reset(); s.downWide.reset(); s.downTight.reset();
-        }
+        for (int c = 0; c < channels; ++c) resetChannel (c);
+    }
+
+    void resetChannel (int ch)
+    {
+        auto& s = st[ch];
+        s.upTight.reset(); s.upWide.reset(); s.downWide.reset(); s.downTight.reset();
     }
 
     // n base-rate samples -> 4n samples at the oversampled rate.

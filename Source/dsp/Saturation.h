@@ -13,12 +13,20 @@ namespace shaper
 enum Type { Odd = 0, Even, Heavy, Crush, Tape, Tube, Transformer, numTypes };
 
 //------------------------------------------------------------------------------
+// asinh(u) = sign(u) ln(|u| + s) with s = sqrt(1 + u^2): the square root is the one the antiderivative needs
+// anyway, so this is cheaper than std::asinh and agrees with it to a few ulp.
+inline double asinhFromRoot (double u, double s) noexcept { return std::copysign (std::log (std::abs (u) + s), u); }
+
 // u / sqrt(1 + u^2): soft, odd harmonics (Odd, Transformer).
 struct Sig
 {
     static double f (double u) noexcept { return u / std::sqrt (1.0 + u * u); }
     static double F1 (double u) noexcept { return std::sqrt (1.0 + u * u); }
-    static double F2 (double u) noexcept { return 0.5 * (u * std::sqrt (1.0 + u * u) + std::asinh (u)); }
+    static double F2 (double u) noexcept
+    {
+        const double s = std::sqrt (1.0 + u * u);
+        return 0.5 * (u * s + asinhFromRoot (u, s));
+    }
 };
 
 // Biased sigmoid, normalised to f(0) = 0 and unit slope: even and odd harmonics (Even, Tube).
@@ -36,7 +44,11 @@ struct BiasedSig
     BiasedSig() { set (0.45); }
     double f (double x) const noexcept { return (Sig::f (x + b) - sb) * norm; }
     double F1 (double x) const noexcept { return (std::sqrt (1.0 + (x + b) * (x + b)) - sb * x) * norm; }
-    double F2 (double x) const noexcept { const double u = x + b; return (0.5 * (u * std::sqrt (1.0 + u * u) + std::asinh (u)) - 0.5 * sb * x * x) * norm; }
+    double F2 (double x) const noexcept
+    {
+        const double u = x + b, s = std::sqrt (1.0 + u * u);
+        return (0.5 * (u * s + asinhFromRoot (u, s)) - 0.5 * sb * x * x) * norm;
+    }
 };
 
 // Cubic soft clip with a hard knee at |x| = 1.5 (Heavy).

@@ -21,6 +21,13 @@ struct SatParams
 // calibrated gain staging. Everything that changes over time is driven from control ticks
 // (commit() and tick() are called by the module on absolute multiples of kControlBlock) or by
 // per-sample fades, so the output does not depend on the host block size.
+//
+// Mix blends the wet path with its linear twin (the same droop filter and decimator, without the
+// shaper), so the mix stays phase-coherent. The twin only runs while Mix is not exactly 1. Its
+// state is a pure function of the input since the last reset, so when it is needed again it is
+// rebuilt by replaying the last kRingBase samples of input (kept in a ring while the section is
+// active) from a zero state. The replay is exact: the filters have finite memory, shorter than
+// the replayed span.
 class SatSection
 {
 public:
@@ -58,6 +65,7 @@ public:
         params = p;
         hq = p.hq;
         wantType = p.type;
+        base = 0;
         driveSm.setTarget (p.drive); driveSm.snap();
         toneSm.setTarget (p.tone * 0.01f); toneSm.snap();
         mixSm.setTarget (p.mix * 0.01f); mixSm.snap();
@@ -133,6 +141,9 @@ public:
     // Processes `len` (<= kControlBlock) samples; `pos` is the position inside the control interval.
     void process (float* const* io, int numCh, int len, int pos)
     {
+        const uint64_t at = base; // absolute index of the first sample of this segment
+        base += (uint64_t) len;
+
         float dry[2][kSeg];
         if (hq)
             for (int c = 0; c < numCh; ++c) delay.process (c, io[c], dry[c], len, kHqLatency);
@@ -154,6 +165,8 @@ public:
             xv[i] = xfActive ? fadeX.next() : 0.0f;
             mv[i] = mFrom + mStep * (float) (pos + i);
         }
+        // Mix exactly 1 for the whole segment: the wet path is the output and the linear twin is not run.
+        const bool mixIdle = mFrom == 1.0f && mTo == 1.0f;
 
         auto ramp = [&] (const Slot& s, double scale)
         {
@@ -166,52 +179,86 @@ public:
             return r;
         };
 
-        for (int c = 0; c < numCh; ++c)
+        // The shaper runs on all channels together (one pass, see sat::processStereo); the mix is per channel.
+        const float* inP[2] { io[0], numCh > 1 ? io[1] : nullptr };
+        if (hq)
         {
-            float* x = io[c];
-            float wetA[kSeg], wetB[kSeg];
-            if (hq)
+            float up[2][4 * kSeg], outA[2][4 * kSeg], outB[2][4 * kSeg];
+            for (int c = 0; c < numCh; ++c)
             {
-                float up[4 * kSeg], outA[4 * kSeg], outB[4 * kSeg];
-                os.up (c, x, up, len);
-                shape (slot[curSlot], c, up, outA, 4 * len, ramp (slot[curSlot], 0.25));
-                if (xfActive)
+                os.up (c, io[c], up[c], len);
+                for (int k = 0; k < 4 * len; ++k) ringHq[c][(4 * at + (uint64_t) k) & (4 * kRingBase - 1)] = up[c][k];
+            }
+            const float* upP[2] { up[0], up[1] };
+            float* outAP[2] { outA[0], outA[1] };
+            float* outBP[2] { outB[0], outB[1] };
+            shapeChannels (slot[curSlot], numCh, upP, outAP, 4 * len, ramp (slot[curSlot], 0.25));
+            if (xfActive)
+            {
+                shapeChannels (slot[1 - curSlot], numCh, upP, outBP, 4 * len, ramp (slot[1 - curSlot], 0.25));
+                for (int c = 0; c < numCh; ++c)
+                    for (int i = 0; i < 4 * len; ++i) outA[c][i] += (outB[c][i] - outA[c][i]) * xv[i >> 2];
+            }
+            for (int c = 0; c < numCh; ++c)
+            {
+                float* x = io[c];
+                float wetA[kSeg];
+                os.down (c, outA[c], wetA, len);
+                if (mixIdle)
                 {
-                    shape (slot[1 - curSlot], c, up, outB, 4 * len, ramp (slot[1 - curSlot], 0.25));
-                    for (int i = 0; i < 4 * len; ++i) outA[i] += (outB[i] - outA[i]) * xv[i >> 2];
+                    twinLive[c] = false;
+                    for (int i = 0; i < len; ++i) x[i] = dry[c][i] + sf[i] * (wetA[i] - dry[c][i]);
                 }
-                os.down (c, outA, wetA, len);
-                // Linear twin of the oversampled path (droop FIR and ADAA average at 4x, same decimator), so the
-                // mix is phase-coherent with the wet path; the integer dry delay alone is not.
-                float lin4[4 * kSeg], lin[kSeg];
-                linearTwin4 (c, up, lin4, 4 * len);
-                osTwin.down (c, lin4, lin, len);
-                for (int i = 0; i < len; ++i)
+                else
                 {
-                    const float mixed = lin[i] + mv[i] * (wetA[i] - lin[i]);
-                    x[i] = dry[c][i] + sf[i] * (mixed - dry[c][i]);
+                    // Linear twin of the oversampled path (droop FIR and ADAA average at 4x, same decimator), so the
+                    // mix is phase-coherent with the wet path; the integer dry delay alone is not.
+                    float lin[kSeg];
+                    if (! twinLive[c]) primeHq (c, at);
+                    twinHq (c, up[c], 4 * len, lin, len);
+                    twinLive[c] = true;
+                    for (int i = 0; i < len; ++i)
+                    {
+                        const float mixed = lin[i] + mv[i] * (wetA[i] - lin[i]);
+                        x[i] = dry[c][i] + sf[i] * (mixed - dry[c][i]);
+                    }
                 }
             }
-            else
+        }
+        else
+        {
+            for (int c = 0; c < numCh; ++c)
+                for (int i = 0; i < len; ++i) ringX[c][(at + (uint64_t) i) & (kRingBase - 1)] = io[c][i];
+            float wetA[2][kSeg], wetB[2][kSeg];
+            float* wetAP[2] { wetA[0], wetA[1] };
+            float* wetBP[2] { wetB[0], wetB[1] };
+            shapeChannels (slot[curSlot], numCh, inP, wetAP, len, ramp (slot[curSlot], 1.0));
+            if (xfActive)
             {
-                shape (slot[curSlot], c, x, wetA, len, ramp (slot[curSlot], 1.0));
-                if (xfActive)
+                shapeChannels (slot[1 - curSlot], numCh, inP, wetBP, len, ramp (slot[1 - curSlot], 1.0));
+                for (int c = 0; c < numCh; ++c)
+                    for (int i = 0; i < len; ++i) wetA[c][i] += (wetB[c][i] - wetA[c][i]) * xv[i];
+            }
+            for (int c = 0; c < numCh; ++c)
+            {
+                float* x = io[c];
+                if (mixIdle)
                 {
-                    shape (slot[1 - curSlot], c, x, wetB, len, ramp (slot[1 - curSlot], 1.0));
-                    for (int i = 0; i < len; ++i) wetA[i] += (wetB[i] - wetA[i]) * xv[i];
+                    twinLive[c] = false;
+                    for (int i = 0; i < len; ++i) x[i] += sf[i] * (wetA[c][i] - x[i]);
                 }
-                // linear twin of the wet path (droop FIR + ADAA average) keeps Mix phase-coherent
-                auto& tw = twin[c];
-                const auto& d = slot[curSlot].cf.droop;
-                float droopOut[kSeg];
-                sat::firRing (d.h.data(), d.taps, tw.hist, tw.pos, x, droopOut, len); // reads x before it is changed below
-                for (int i = 0; i < len; ++i)
+                else
                 {
-                    const float acc = droopOut[i];
-                    const float lin = 0.5f * (acc + tw.prev);
-                    tw.prev = acc;
-                    const float mixed = lin + mv[i] * (wetA[i] - lin);
-                    x[i] += sf[i] * (mixed - x[i]);
+                    // linear twin of the wet path (droop FIR + ADAA average) keeps Mix phase-coherent
+                    float lin[kSeg];
+                    if (! twinLive[c]) primeEco (c, at);
+                    twinEco (c, x, len, lin);
+                    twinLive[c] = true;
+                    for (int i = 0; i < len; ++i)
+                    {
+                        const float mixed = lin[i] + mv[i] * (wetA[c][i] - lin[i]);
+                        x[i] += sf[i] * (mixed - x[i]);
+                    }
                 }
             }
         }
@@ -243,12 +290,15 @@ private:
         void reset() { std::fill (std::begin (hist), std::end (hist), 0.0f); pos = 0; d1 = d2 = 0.0f; }
     };
 
-    // Linear response of the 4x path: droop FIR, then the order-2 ADAA average (u + x1 + x2) / 3.
-    void linearTwin4 (int c, const float* up4, float* lin4, int n4) noexcept
+    // Base samples of input history kept for rebuilding a twin (>= the memory of every twin filter, about 52).
+    static constexpr int kRingBase = 128;
+
+    // Linear twin of the HQ path for `n` base samples (4 n input samples): droop FIR, ADAA-2 average, decimator.
+    void twinHq (int c, const float* up4, int n4, float* lin, int n) noexcept
     {
         auto& tw = twin4[c];
-        float droopOut[4 * kSeg];
-        sat::firRing (droopHq.h.data(), droopHq.taps, tw.hist, tw.pos, up4, droopOut, n4);
+        float droopOut[4 * kSeg], lin4[4 * kSeg];
+        droopFilter (droopHq, tw.hist, tw.pos, up4, droopOut, n4);
         for (int i = 0; i < n4; ++i)
         {
             const float acc = droopOut[i];
@@ -256,17 +306,61 @@ private:
             tw.d2 = tw.d1;
             tw.d1 = acc;
         }
+        osTwin.down (c, lin4, lin, n);
+    }
+
+    // Linear twin of the Eco path: droop FIR and the two-sample average.
+    void twinEco (int c, const float* x, int n, float* lin) noexcept
+    {
+        auto& tw = twin[c];
+        float droopOut[kSeg];
+        droopFilter (droopEco, tw.hist, tw.pos, x, droopOut, n);
+        for (int i = 0; i < n; ++i)
+        {
+            const float acc = droopOut[i];
+            lin[i] = 0.5f * (acc + tw.prev);
+            tw.prev = acc;
+        }
+    }
+
+    // Brings the HQ twin of channel c to the state a continuous run would have at `at`: zero state at the last
+    // reset (or kRingBase samples back, where the zero state has already been forgotten), then replay.
+    void primeHq (int c, uint64_t at)
+    {
+        twin4[c].reset();
+        osTwin.resetChannel (c);
+        const uint64_t start = std::max (twinEpoch, at > (uint64_t) kRingBase ? at - (uint64_t) kRingBase : 0);
+        float up[4 * kSeg], lin[kSeg];
+        for (uint64_t b = start; b < at;)
+        {
+            const int m = (int) std::min<uint64_t> ((uint64_t) kSeg, at - b);
+            for (int k = 0; k < 4 * m; ++k) up[k] = ringHq[c][(4 * b + (uint64_t) k) & (4 * kRingBase - 1)];
+            twinHq (c, up, 4 * m, lin, m);
+            b += (uint64_t) m;
+        }
+    }
+
+    void primeEco (int c, uint64_t at)
+    {
+        twin[c].reset();
+        const uint64_t start = std::max (twinEpoch, at > (uint64_t) kRingBase ? at - (uint64_t) kRingBase : 0);
+        float x[kSeg], lin[kSeg];
+        for (uint64_t b = start; b < at;)
+        {
+            const int m = (int) std::min<uint64_t> ((uint64_t) kSeg, at - b);
+            for (int i = 0; i < m; ++i) x[i] = ringX[c][(b + (uint64_t) i) & (kRingBase - 1)];
+            twinEco (c, x, m, lin);
+            b += (uint64_t) m;
+        }
     }
 
     bool isActive() const noexcept { return fadeOn.target > 0.5f || fadeOn.value > 0.0f || warmLeft > 0; }
 
-    void shape (Slot& s, int c, const float* in, float* out, int n, const Ramp& r) noexcept
+    // Shaper of the first numCh channels of a slot (both channels in one pass when stereo).
+    static void shapeChannels (Slot& s, int numCh, const float* const* in, float* const* out, int n, const Ramp& r) noexcept
     {
-        process_ (s, c, in, out, n, r);
-    }
-    void process_ (Slot& s, int c, const float* in, float* out, int n, const Ramp& r) noexcept
-    {
-        sat::process (s.st[c], s.cf, in, out, n, r);
+        if (numCh == 2) processStereo (s.st[0], s.st[1], s.cf, in[0], in[1], out[0], out[1], n, r);
+        else sat::process (s.st[0], s.cf, in[0], out[0], n, r);
     }
 
     void configureSlot (Slot& s, int type)
@@ -280,6 +374,7 @@ private:
         applyGains (s, true);
     }
 
+    // Starts every twin from zero at the current sample (the next segment).
     void resetEngines()
     {
         xfActive = false;
@@ -289,6 +384,9 @@ private:
         slot[1].type = -1;
         for (auto& t : twin) t.reset();
         for (auto& t : twin4) t.reset();
+        osTwin.reset();
+        twinEpoch = base;
+        twinLive[0] = twinLive[1] = false;
         mFrom = mTo = mixSm.current;
     }
 
@@ -341,6 +439,11 @@ private:
     Slot slot[2];
     Twin twin[2];
     Twin4 twin4[2];
+    float ringHq[2][4 * kRingBase] {};   // HQ input history (4x), indexed by absolute sample
+    float ringX[2][kRingBase] {};        // Eco input history (base rate)
+    uint64_t base = 0;                   // absolute index of the next sample
+    uint64_t twinEpoch = 0;              // absolute index of the last twin reset
+    bool twinLive[2] { false, false };   // the twin state is current (it was run for the previous segment)
     SatParams params;
     int curSlot = 0, wantType = 0, warmLeft = 0;
     bool hq = false, xfActive = false;
