@@ -63,11 +63,7 @@ SmartStartPanel::SmartStartPanel (NorthlineProcessor& processor)
     : proc (processor), results (std::make_unique<ResultList>())
 {
     setLookAndFeel (&lookAndFeel);
-    setOpaque (true);
-
-    heading.setText ("Smart Start", juce::dontSendNotification);
-    heading.setFont (NorthlineLookAndFeel::font (18.0f, true));
-    heading.setColour (juce::Label::textColourId, colours::text);
+    setOpaque (false);
 
     subtitle.setText ("Pick the source, press Listen while it plays. Smart Start sets a starting point for the chain. "
                       "It is one undo step, and the changes are highlighted in Spotlight.",
@@ -79,11 +75,9 @@ SmartStartPanel::SmartStartPanel (NorthlineProcessor& processor)
     status.setFont (NorthlineLookAndFeel::font (13.0f));
     status.setColour (juce::Label::textColourId, colours::text);
 
-    addAndMakeVisible (heading);
     addAndMakeVisible (subtitle);
     addAndMakeVisible (status);
     addAndMakeVisible (listenButton);
-    addAndMakeVisible (closeButton);
     addAndMakeVisible (resultViewport);
     resultViewport.setViewedComponent (results.get(), false);
     resultViewport.setScrollBarsShown (true, false);
@@ -100,7 +94,6 @@ SmartStartPanel::SmartStartPanel (NorthlineProcessor& processor)
     sourceButtons[(int) source]->setToggleState (true, juce::dontSendNotification);
 
     listenButton.onClick = [this] { listenOrCancel(); };
-    closeButton.onClick = [this] { if (onClose) onClose(); };
 
     lastPhase = proc.getSmartStart().getPhase();
     if (lastPhase == smart::SmartStart::Phase::Done) showResult();
@@ -149,20 +142,9 @@ void SmartStartPanel::timerCallback()
     status.setText (ss.statusText(), juce::dontSendNotification);
 }
 
-void SmartStartPanel::paint (juce::Graphics& g)
-{
-    g.fillAll (colours::panel);
-    g.setColour (colours::edge);
-    g.drawRect (getLocalBounds(), 1);
-}
-
 void SmartStartPanel::resized()
 {
-    auto area = getLocalBounds().reduced (kPad);
-
-    auto top = area.removeFromTop (30);
-    closeButton.setBounds (top.removeFromRight (84).reduced (0, 2));
-    heading.setBounds (top);
+    auto area = getLocalBounds();
 
     subtitle.setBounds (area.removeFromTop (40));
     area.removeFromTop (8);

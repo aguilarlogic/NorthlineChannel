@@ -236,6 +236,7 @@ private:
 class StereoMeter : public juce::Component, public juce::SettableTooltipClient
 {
 public:
+    static constexpr float kScaleGutter = 22.0f; // width of the dB numbers, at the left
     void setLevels (float peakL, float peakR, float rmsL, float rmsR);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override { clip = false; holdDb[0] = holdDb[1] = -100.0f; repaint(); }

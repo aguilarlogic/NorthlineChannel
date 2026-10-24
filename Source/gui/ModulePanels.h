@@ -69,6 +69,9 @@ public:
     // Active while the panel is on screen or is the editor's detail view. Analysers run only while active.
     virtual void setActive (bool) {}
     void setCpuUs (float us, float blockUs);
+    // The per-module CPU readout in the footer. Off unless Settings -> Show CPU is on (roadmap 8.4).
+    void setShowCpu (bool on);
+    bool cpuFooterShown() const noexcept { return showCpu; }
     std::function<void (int moduleId, int delta)> onMove;
 
 protected:
@@ -132,6 +135,7 @@ private:
     std::unique_ptr<Segmented> mode;
     juce::TextButton moveLeft { "<" }, moveRight { ">" };
     juce::String cpuText;
+    bool showCpu = false;
     std::unique_ptr<juce::ParameterAttachment> onWatcher;
     std::vector<std::unique_ptr<juce::ParameterAttachment>> layoutWatchers;
 };

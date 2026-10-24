@@ -4,6 +4,20 @@
 
 namespace nl
 {
+// The interface size as the top bar shows it: the percentage (any size, including the ones not in the list).
+juce::String scalePercentText (float scale);
+
+// Undo and redo: a filled curved arrow drawn as a path, so it reads at every interface size.
+class ArrowButton : public juce::Button
+{
+public:
+    explicit ArrowButton (bool redo);
+    void paintButton (juce::Graphics&, bool over, bool down) override;
+
+private:
+    bool mirrored;
+};
+
 // The 44 px top bar: preset navigation, Save menu, A/B, undo history, Smart Start, Spotlight,
 // Eco/HQ, latency, hub and settings. Callbacks are wired by the editor.
 class TopBar : public juce::Component
@@ -47,7 +61,8 @@ private:
     NorthlineProcessor& proc;
     juce::TextButton prevButton { "<" }, nextButton { ">" }, presetButton, saveButton { "Save" };
     juce::TextButton slotA { "A" }, slotB { "B" }, copyAB { "A>B" };
-    juce::TextButton undoButton { "Undo" }, redoButton { "Redo" }, historyButton { "History" };
+    ArrowButton undoButton { false }, redoButton { true };
+    juce::TextButton historyButton { "History" };
     juce::TextButton smartStartButton { "Smart Start" }, spotlightButton { "Spotlight" }, editSpotlightButton { "Edit Spotlight" };
     juce::TextButton hubButton { "Hub" }, settingsButton { "Settings" };
     juce::ComboBox scale;

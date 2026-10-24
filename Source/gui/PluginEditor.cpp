@@ -55,14 +55,13 @@ NorthlineEditor::NorthlineEditor (NorthlineProcessor& p)
     console = UiSettings::get().consoleLayout();
     buildContent();
 
-    // A window that has not been sized by the user (stored scale 100 %) opens at the global
-    // default. A stored scale other than 100 % is kept for this instance. The size is set before
-    // the limits, so the constraints do not resize (and re-store) a window that has no size yet.
-    float initial = proc.getUiScale();
-    if (std::abs (initial - 1.0f) < 1.0e-4f) initial = UiSettings::get().defaultScale();
+    // An instance whose size the user never chose opens at the global default. A size the user chose
+    // for this instance is kept, 100 % included. The size is set before the limits, so the constraints
+    // do not resize (and re-store) a window that has no size yet.
+    const float initial = proc.isUiScaleSet() ? proc.getUiScale() : UiSettings::get().defaultScale();
     appliedSerial = UiSettings::get().applyAllSerial();
     setScale (initial, false);
-    proc.setUiScale (UiSettings::clampScale (initial));
+    proc.setUiScale (UiSettings::clampScale (initial), false); // what the top bar shows; not a user choice
 
     setResizable (true, true);
     setResizeLimits (juce::roundToInt (shell::kBaseW * UiSettings::kMinScale), juce::roundToInt (shell::kBaseH * UiSettings::kMinScale),
@@ -128,6 +127,8 @@ void NorthlineEditor::buildContent()
     panels[modEq] = std::make_unique<EqPanel> (proc);
     panels[modComp] = std::make_unique<CompPanel> (proc);
     for (auto& panel : panels)
+    {
+        panel->setShowCpu (UiSettings::get().showCpu());
         panel->onMove = [this] (int id, int delta)
         {
             proc.moveModule (id, delta);
@@ -135,6 +136,7 @@ void NorthlineEditor::buildContent()
             layoutDetail();
             topBar->refresh();
         };
+    }
 
     master = std::make_unique<MasterPanel> (proc);
     content.addAndMakeVisible (*master);
@@ -152,7 +154,7 @@ void NorthlineEditor::setScale (float s, bool storeInProcessor)
     content.setTransform (transform);
     overlayHolder.setTransform (transform);
     ui::setDisplayScale (s);
-    if (storeInProcessor && std::abs (proc.getUiScale() - s) > 1.0e-4f) proc.setUiScale (s);
+    if (storeInProcessor) proc.setUiScale (s); // a size set here is the instance's own choice
     setSize (juce::roundToInt (kBaseW * s), juce::roundToInt (kBaseH * s));
 }
 
@@ -232,6 +234,26 @@ void NorthlineEditor::layoutDetail()
         }
     }
     cpuInfo->toFront (false);
+    syncPanelActivity();
+}
+
+bool NorthlineEditor::isPanelActive (int moduleId) const noexcept
+{
+    return moduleId >= 0 && moduleId < numModules && panelLive[(size_t) moduleId];
+}
+
+void NorthlineEditor::syncPanelActivity()
+{
+    // A panel runs its analysers and harmonic taps while it is on screen. A headless editor (offline
+    // snapshot, tests) has no peer, so isShowing() is always false there; it counts as on screen.
+    const bool screen = isShowing() || getPeer() == nullptr;
+    for (int m = 0; m < numModules; ++m)
+    {
+        auto* panel = panels[(size_t) m].get();
+        const bool live = screen && panel != nullptr && (console || m == selected) && panel->isVisible();
+        panelLive[(size_t) m] = live;
+        if (panel != nullptr) panel->setActive (live); // idempotent: the panels attach and detach only on change
+    }
 }
 
 void NorthlineEditor::selectModule (int moduleId)
@@ -249,16 +271,27 @@ void NorthlineEditor::selectModule (int moduleId)
     }
 }
 
-void NorthlineEditor::showOverlay (std::unique_ptr<juce::Component> c)
+void NorthlineEditor::showOverlay (std::unique_ptr<juce::Component> body, const juce::String& title, overlay::Size size,
+                                   std::function<void()> onDismiss)
 {
     closeOverlay();
-    if (c == nullptr) return;
-    overlay = std::move (c);
+    if (body == nullptr) return;
+
+    auto card = std::make_unique<OverlayCard> (std::move (body), title, size);
+    card->onClose = [this, dismiss = std::move (onDismiss)]
+    {
+        if (dismiss) dismiss();
+        closeOverlay();
+    };
+    const auto cardRect = overlay::cardBounds ({ 0, 0, kBaseW, kBaseH }, size);
+    overlaySizeValue = size;
+    overlay = std::move (card);
     overlayHolder.addAndMakeVisible (*overlay);
-    overlay->setBounds (0, 0, kBaseW, kBaseH);
+    overlay->setBounds (overlay::componentBounds (cardRect));
     overlayLayer.setVisible (true);
     overlayLayer.toFront (false);
-    overlay->grabKeyboardFocus();
+    if (auto* c = static_cast<OverlayCard*> (overlay.get())->getContent()) c->grabKeyboardFocus();
+    else overlay->grabKeyboardFocus();
 }
 
 void NorthlineEditor::closeOverlay()
@@ -287,14 +320,14 @@ void NorthlineEditor::openPresetBrowser()
 {
     auto b = std::make_unique<PresetBrowser> (proc);
     b->onClose = [this] { closeOverlay(); if (topBar) topBar->refresh(); };
-    showOverlay (std::move (b));
+    showOverlay (std::move (b), "Presets", overlay::Size::large);
 }
 
 void NorthlineEditor::openSmartStart()
 {
     auto s = std::make_unique<SmartStartPanel> (proc);
     s->onClose = [this] { closeOverlay(); };
-    showOverlay (std::move (s));
+    showOverlay (std::move (s), "Smart Start", overlay::Size::medium);
 }
 
 void NorthlineEditor::openHub()
@@ -309,7 +342,7 @@ void NorthlineEditor::openHub()
             if (auto* ed = other->getActiveEditor())
                 if (auto* top = ed->getTopLevelComponent()) top->toFront (true);
     };
-    showOverlay (std::move (h));
+    showOverlay (std::move (h), "Instance Hub", overlay::Size::large);
 }
 
 void NorthlineEditor::openSettings()
@@ -319,14 +352,15 @@ void NorthlineEditor::openSettings()
         [this] (float v) { setScale (v, true); },
         [this] { openOnboarding(); });
     s->onClose = [this] { closeOverlay(); };
-    showOverlay (std::move (s));
+    showOverlay (std::move (s), "Settings", overlay::Size::medium);
 }
 
 void NorthlineEditor::openOnboarding()
 {
     auto c = std::make_unique<OnboardingCoach>();
     c->onClose = [this] { closeOverlay(); };
-    showOverlay (std::move (c));
+    // Closing the tour with its close button counts as finishing it, so it does not come back at start-up.
+    showOverlay (std::move (c), "First-run tour", overlay::Size::compact, [] { UiSettings::get().setOnboardingDone (true); });
 }
 
 void NorthlineEditor::changeListenerCallback (juce::ChangeBroadcaster*)
@@ -360,6 +394,8 @@ void NorthlineEditor::settingsChanged()
     }
 
     cpuInfo->setVisible (s.showCpu());
+    for (auto& panel : panels)
+        if (panel != nullptr) panel->setShowCpu (s.showCpu());
 }
 
 void NorthlineEditor::onFrame()
@@ -433,7 +469,7 @@ void NorthlineEditor::drainMeters()
     if (any && (++cpuTick % 12) == 0)
     {
         for (auto& panel : panels)
-            if (panel != nullptr) panel->setCpuUs (last.moduleUs[panel->getModuleId()], last.blockUs);
+            if (panel != nullptr && UiSettings::get().showCpu()) panel->setCpuUs (last.moduleUs[panel->getModuleId()], last.blockUs);
         topBar->setCpu (cpuAvg);
         std::array<float, numModules> us {};
         for (int m = 0; m < numModules; ++m) us[(size_t) m] = last.moduleUs[m];
@@ -444,6 +480,7 @@ void NorthlineEditor::drainMeters()
 void NorthlineEditor::housekeeping()
 {
     if (topBar == nullptr) return;
+    syncPanelActivity();
 
     // Whole-state changes (presets, undo, A/B, host state restore).
     const int gen = proc.stateGeneration.load();

@@ -3,11 +3,6 @@
 
 namespace nl
 {
-namespace
-{
-constexpr int kCardW = 520, kCardH = 250;
-}
-
 OnboardingCoach::OnboardingCoach()
 {
     setWantsKeyboardFocus (true);
@@ -57,8 +52,7 @@ void OnboardingCoach::finish()
 
 void OnboardingCoach::resized()
 {
-    const auto card = juce::Rectangle<int> (kCardW, kCardH).withCentre (getLocalBounds().getCentre());
-    auto r = card.reduced (20, 18).removeFromBottom (30);
+    auto r = getLocalBounds().removeFromBottom (30);
     skip.setBounds (r.removeFromLeft (80));
     next.setBounds (r.removeFromRight (100));
     r.removeFromRight (8);
@@ -67,16 +61,7 @@ void OnboardingCoach::resized()
 
 void OnboardingCoach::paint (juce::Graphics& g)
 {
-    g.setColour (juce::Colours::black.withAlpha (0.55f));
-    g.fillAll();
-
-    const auto card = juce::Rectangle<int> (kCardW, kCardH).withCentre (getLocalBounds().getCentre()).toFloat();
-    g.setColour (colours::panel);
-    g.fillRoundedRectangle (card, tokens::radius::panel + 2.0f);
-    g.setColour (colours::focus);
-    g.drawRoundedRectangle (card.reduced (0.5f), tokens::radius::panel + 2.0f, 1.0f);
-
-    auto r = card.toNearestInt().reduced (20, 18);
+    auto r = getLocalBounds();
     g.setColour (colours::text);
     g.setFont (NorthlineLookAndFeel::font (tokens::type::title + 2.0f, true));
     g.drawText (titleFor (step), r.removeFromTop (26), juce::Justification::centredLeft);
@@ -85,8 +70,8 @@ void OnboardingCoach::paint (juce::Graphics& g)
     g.setFont (NorthlineLookAndFeel::font (tokens::type::value));
     g.drawFittedText (bodyFor (step), r.removeFromTop (110).reduced (0, 6), juce::Justification::topLeft, 6);
 
-    // step dots
-    auto dots = juce::Rectangle<int> (r.getX(), card.getBottom() - 74, 80, 12);
+    // step dots, just above the buttons
+    auto dots = juce::Rectangle<int> (r.getX(), getHeight() - 30 - 26, 80, 12);
     for (int i = 0; i < kSteps; ++i)
     {
         g.setColour (i == step ? colours::focus : colours::controlEdge);

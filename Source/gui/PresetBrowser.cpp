@@ -8,15 +8,13 @@ class PresetBrowser::Impl : public juce::ListBoxModel
 public:
     Impl (PresetBrowser& o, NorthlineProcessor& p) : owner (o), proc (p)
     {
-        for (auto* c : std::initializer_list<juce::Component*> { &title, &search, &categoryBox, &familyBox, &folderBox, &sortBox, &favOnly,
-                                                                &saveModeButton, &closeButton, &list, &detailName, &detailMeta, &detailNote,
+        for (auto* c : std::initializer_list<juce::Component*> { &search, &categoryBox, &familyBox, &folderBox, &sortBox, &favOnly,
+                                                                &saveModeButton, &list, &detailName, &detailMeta, &detailNote,
                                                                 &detailSpot, &loadButton, &favButton, &trashButton, &folderName,
                                                                 &newFolderButton, &renameFolderButton, &deleteFolderButton, &saveName,
                                                                 &saveCategory, &saveTags, &saveNote, &saveFolder, &saveButton, &cancelButton, &status })
             owner.addAndMakeVisible (c);
 
-        title.setText ("Presets", juce::dontSendNotification);
-        title.setFont (NorthlineLookAndFeel::font (18.0f, true));
         search.setTextToShowWhenEmpty ("Search name, category, tags, notes", colours::faint);
         search.onTextChange = [this] { applyFilter(); };
 
@@ -24,6 +22,7 @@ public:
         familyBox.addItem ("All families", 1);
         familyBox.addItem (kStarting, 2);
         familyBox.addItem (kCharacter, 3);
+        familyBox.setSelectedId (1, juce::dontSendNotification); // every combo shows a value, never a blank
         sortBox.addItem ("Library order", 1);
         sortBox.addItem ("Name", 2);
         sortBox.addItem ("Category", 3);
@@ -38,8 +37,6 @@ public:
         favOnly.onClick = [this] { applyFilter(); };
         saveModeButton.setButtonText ("Save preset...");
         saveModeButton.onClick = [this] { toggleSave (! saveName.isVisible()); };
-        closeButton.setButtonText ("Close");
-        closeButton.onClick = [this] { if (owner.onClose) owner.onClose(); };
 
         list.setModel (this);
         list.setRowHeight (42);
@@ -339,9 +336,6 @@ public:
     void layout (juce::Rectangle<int> r)
     {
         auto top = r.removeFromTop (34);
-        title.setBounds (top.removeFromLeft (110));
-        closeButton.setBounds (top.removeFromRight (80));
-        top.removeFromRight (8);
         saveModeButton.setBounds (top.removeFromRight (120));
         top.removeFromRight (8);
         favOnly.setBounds (top.removeFromRight (130));
@@ -413,10 +407,10 @@ public:
     static constexpr const char* kStarting = "Starting points";
     static constexpr const char* kCharacter = "Character";
 
-    juce::Label title, detailName, detailMeta, detailSpot, status;
+    juce::Label detailName, detailMeta, detailSpot, status;
     juce::TextEditor search, detailNote, folderName, saveName, saveCategory, saveTags, saveNote;
     juce::ComboBox categoryBox, familyBox, folderBox, sortBox, saveFolder;
-    juce::TextButton favOnly, saveModeButton, closeButton, loadButton, favButton, trashButton;
+    juce::TextButton favOnly, saveModeButton, loadButton, favButton, trashButton;
     juce::TextButton newFolderButton, renameFolderButton, deleteFolderButton, saveButton, cancelButton;
     juce::ListBox list;
 
@@ -434,15 +428,7 @@ PresetBrowser::PresetBrowser (NorthlineProcessor& p) : impl (std::make_unique<Im
 
 PresetBrowser::~PresetBrowser() = default;
 
-void PresetBrowser::paint (juce::Graphics& g)
-{
-    g.setColour (colours::panel);
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 8.0f);
-    g.setColour (colours::edge);
-    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (0.5f), 8.0f, 1.0f);
-}
-
-void PresetBrowser::resized() { impl->layout (getLocalBounds().reduced (14)); }
+void PresetBrowser::resized() { impl->layout (getLocalBounds()); }
 
 bool PresetBrowser::keyPressed (const juce::KeyPress& key)
 {

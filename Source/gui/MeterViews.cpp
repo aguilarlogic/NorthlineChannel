@@ -132,9 +132,9 @@ void GrMeter::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat();
     auto readout = r.removeFromLeft (44.0f);
-    g.setFont (NorthlineLookAndFeel::font (12.0f, true));
     g.setColour (colours::text);
-    g.drawText (value < -0.05f ? juce::String (value, 1) : juce::String ("0.0"), readout, juce::Justification::centredLeft);
+    figures::draw (g, value < -0.05f ? juce::String (value, 1) : juce::String ("0.0"), readout, juce::Justification::centredLeft,
+                   NorthlineLookAndFeel::font (12.0f, true));
 
     r.removeFromLeft (4.0f);
     auto bar = r.removeFromTop (10.0f);
@@ -386,10 +386,11 @@ void LoudnessReadouts::paint (juce::Graphics& g)
         g.setFont (label11 (true));
         g.setColour (colours::dim);
         g.drawText (name, c.removeFromTop (12.0f), juce::Justification::centredLeft);
-        g.setFont (NorthlineLookAndFeel::font (15.0f, true));
+        // The value cell is as wide as the widest reading ("-88.8"), so the unit does not move as the value changes.
+        const auto valueFont = NorthlineLookAndFeel::font (15.0f, true);
+        const float vw = figures::layout (valueFont, "-88.8").width + 2.0f;
         g.setColour (colour);
-        const float vw = juce::GlyphArrangement::getStringWidthInt (NorthlineLookAndFeel::font (15.0f, true), value) + 2.0f;
-        g.drawText (value, c.removeFromLeft (vw), juce::Justification::centredLeft);
+        figures::draw (g, value, c.removeFromLeft (vw), juce::Justification::centredLeft, valueFont);
         g.setFont (label11());
         g.setColour (colours::faint);
         g.drawText (unit, c, juce::Justification::centredLeft);

@@ -1,5 +1,15 @@
 #include "LookAndFeel.h"
 
+// Interface font (roadmap 8.4). Inter (OFL) is used when the build embeds Resources/fonts/Inter-*.ttf
+// with juce_add_binary_data (HEADER_NAME NorthlineFontData.h, NAMESPACE NorthlineFonts). Without the
+// files the platform default sans-serif is used, so the UI works either way. Nothing is downloaded.
+#if __has_include("NorthlineFontData.h")
+#include "NorthlineFontData.h"
+#define NL_INTER_EMBEDDED 1
+#else
+#define NL_INTER_EMBEDDED 0
+#endif
+
 namespace nl
 {
 namespace colours
@@ -97,12 +107,93 @@ void NorthlineLookAndFeel::refreshColours()
     setColour (juce::TextEditor::outlineColourId, controlEdge);
     setColour (juce::TextEditor::focusedOutlineColourId, focus);
     setColour (juce::TextEditor::highlightColourId, eq.withAlpha (0.45f));
+    setColour (juce::TextEditor::highlightedTextColourId, juce::Colours::white);
+    setColour (juce::CaretComponent::caretColourId, focus);
+
+    // Scrollbars, table headers and list boxes: the default JUCE blue and grey are replaced.
+    setColour (juce::ScrollBar::thumbColourId, controlEdge.withAlpha (0.7f));
+    setColour (juce::ScrollBar::trackColourId, juce::Colours::transparentBlack);
+    setColour (juce::ScrollBar::backgroundColourId, juce::Colours::transparentBlack);
+    setColour (juce::TableHeaderComponent::backgroundColourId, panelHeader);
+    setColour (juce::TableHeaderComponent::outlineColourId, edge);
+    setColour (juce::TableHeaderComponent::highlightColourId, track);
+    setColour (juce::TableHeaderComponent::textColourId, dim);
+    setColour (juce::ListBox::backgroundColourId, panel);
+    setColour (juce::ListBox::outlineColourId, edge);
+    setColour (juce::ListBox::textColourId, text);
 }
+
+namespace
+{
+// The embedded Inter faces, or nullptr when the build does not embed them.
+juce::Typeface::Ptr interFace (bool bold)
+{
+#if NL_INTER_EMBEDDED
+    static const juce::Typeface::Ptr regular = juce::Typeface::createSystemTypefaceFor (NorthlineFonts::Inter_Regular_ttf, NorthlineFonts::Inter_Regular_ttfSize);
+    static const juce::Typeface::Ptr boldFace = juce::Typeface::createSystemTypefaceFor (NorthlineFonts::Inter_Bold_ttf, NorthlineFonts::Inter_Bold_ttfSize);
+    return bold ? boldFace : regular;
+#else
+    juce::ignoreUnused (bold);
+    return nullptr;
+#endif
+}
+} // namespace
 
 juce::Font NorthlineLookAndFeel::font (float height, bool bold)
 {
+    if (auto face = interFace (bold); face != nullptr)
+        return juce::Font (juce::FontOptions {}.withTypeface (face).withHeight (height));
     return juce::Font (juce::FontOptions {}.withHeight (height).withStyle (bold ? "Bold" : "Regular"));
 }
+
+bool NorthlineLookAndFeel::interFontActive() noexcept
+{
+    return NL_INTER_EMBEDDED != 0;
+}
+
+namespace figures
+{
+namespace
+{
+bool isDigit (juce::juce_wchar c) noexcept { return c >= '0' && c <= '9'; }
+} // namespace
+
+Layout layout (const juce::Font& f, const juce::String& text)
+{
+    Layout out;
+    out.digitCell = 0.0f;
+    for (char d = '0'; d <= '9'; ++d)
+        out.digitCell = juce::jmax (out.digitCell, juce::GlyphArrangement::getStringWidth (f, juce::String::charToString ((juce::juce_wchar) d)));
+
+    float x = 0.0f;
+    for (int i = 0; i < text.length(); ++i)
+    {
+        const auto c = text[i];
+        out.x.push_back (x);
+        x += isDigit (c) ? out.digitCell : juce::GlyphArrangement::getStringWidth (f, juce::String::charToString (c));
+    }
+    out.width = x;
+    return out;
+}
+
+void draw (juce::Graphics& g, const juce::String& text, juce::Rectangle<float> area, juce::Justification justification, const juce::Font& f)
+{
+    const auto lay = layout (f, text);
+    float x0 = area.getX();
+    if (justification.testFlags (juce::Justification::horizontallyCentred)) x0 = area.getCentreX() - lay.width * 0.5f;
+    else if (justification.testFlags (juce::Justification::right)) x0 = area.getRight() - lay.width;
+
+    g.setFont (f);
+    for (int i = 0; i < text.length(); ++i)
+    {
+        const auto c = text[i];
+        const float cellW = isDigit (c) ? lay.digitCell : juce::GlyphArrangement::getStringWidth (f, juce::String::charToString (c));
+        // Digits are centred in their cell, so a narrow "1" sits in the same place as a wide "8".
+        g.drawText (juce::String::charToString (c), juce::Rectangle<float> (x0 + lay.x[(size_t) i], area.getY(), cellW, area.getHeight()),
+                    juce::Justification::centred, false);
+    }
+}
+} // namespace figures
 
 void NorthlineLookAndFeel::drawKnob (juce::Graphics& g, juce::Rectangle<float> area, float pos, juce::Colour accent, bool bipolar, bool enabled, bool focused)
 {
@@ -226,6 +317,38 @@ void NorthlineLookAndFeel::drawPopupMenuBackground (juce::Graphics& g, int w, in
     g.fillAll (colours::panelHeader);
     g.setColour (colours::edge);
     g.drawRect (0, 0, w, h);
+}
+
+void NorthlineLookAndFeel::drawTableHeaderBackground (juce::Graphics& g, juce::TableHeaderComponent& header)
+{
+    auto r = header.getLocalBounds();
+    g.fillAll (colours::panelHeader);
+    g.setColour (colours::edge);
+    g.fillRect (r.removeFromBottom (1));
+    for (int i = header.getNumColumns (true); --i >= 0;)
+        g.fillRect (header.getColumnPosition (i).removeFromRight (1));
+}
+
+void NorthlineLookAndFeel::drawTableHeaderColumn (juce::Graphics& g, juce::TableHeaderComponent&, const juce::String& columnName, int,
+                                                  int width, int height, bool isMouseOver, bool isMouseDown, int columnFlags)
+{
+    if (isMouseDown) g.fillAll (colours::track.brighter (0.1f));
+    else if (isMouseOver) g.fillAll (colours::track.withAlpha (0.5f));
+
+    auto area = juce::Rectangle<int> (0, 0, width, height).reduced (8, 0);
+    if ((columnFlags & (juce::TableHeaderComponent::sortedForwards | juce::TableHeaderComponent::sortedBackwards)) != 0)
+    {
+        juce::Path arrow;
+        const float cx = (float) area.getRight() - 4.0f, cy = (float) height * 0.5f;
+        const float dir = (columnFlags & juce::TableHeaderComponent::sortedForwards) != 0 ? 1.0f : -1.0f;
+        arrow.addTriangle (cx - 4.0f, cy - 2.0f * dir, cx + 4.0f, cy - 2.0f * dir, cx, cy + 2.0f * dir);
+        g.setColour (colours::dim);
+        g.fillPath (arrow);
+        area.removeFromRight (12);
+    }
+    g.setColour (colours::dim);
+    g.setFont (font (tokens::type::label, true));
+    g.drawFittedText (columnName, area, juce::Justification::centredLeft, 1);
 }
 
 void NorthlineLookAndFeel::drawTooltip (juce::Graphics& g, const juce::String& text, int w, int h)

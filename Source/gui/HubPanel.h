@@ -10,14 +10,13 @@ namespace nl
 // Instance Hub overlay (roadmap 9.2): a table of the Northline instances in this process, with search and
 // a filter, plus the group controls. Clicking a row selects that instance and calls onEditInstance (id);
 // the editor decides what to show for it. A standalone component: the editor sizes it to the content
-// area and shows it above everything; onClose is called by the Close button.
+// area and shows it above everything; onClose fires on Escape.
 class HubPanel : public juce::Component, private juce::Timer, private juce::TableListBoxModel
 {
 public:
     HubPanel();
     ~HubPanel() override;
 
-    void paint (juce::Graphics&) override;
     void resized() override;
 
     std::function<void()> onClose;
@@ -37,8 +36,6 @@ private:
     bool matches (const hub::InstanceInfo& r) const;
 
     NorthlineLookAndFeel lookAndFeel;
-    juce::Label heading;
-    juce::TextButton closeButton { "Close" };
     juce::TextEditor scopeNote, search;
     juce::ComboBox filterBox, groupBox, paramBox;
     juce::TextButton newGroupButton { "New group" }, addSelectedButton { "Add selected" }, linkButton { "Link parameter" };

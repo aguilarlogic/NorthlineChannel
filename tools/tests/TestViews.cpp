@@ -330,8 +330,9 @@ NL_TEST (views_panel_layout_fits)
     int outside = 0, footer = 0, header = 0, cases = 0;
     for (auto& panel : panels)
     {
-        const std::vector<Size> sizes { { 1020, 664, "detail" }, { 900, 560, "small detail" }, { 1400, 900, "large detail" },
-                                        { panel->preferredWidth(), 664, "console" } };
+        // 996 x 632 is the detail area the editor really gives a panel (roadmap 8.2 says "about 1020 x 664").
+        const std::vector<Size> sizes { { 996, 632, "chain detail" }, { 1020, 664, "detail" }, { 900, 560, "small detail" },
+                                        { 1400, 900, "large detail" }, { panel->preferredWidth(), 632, "console" } };
         for (bool drawer : { false, true })
             for (const auto& s : sizes)
             {

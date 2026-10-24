@@ -4,7 +4,15 @@
 #include "TestUtil.h"
 #include "gui/ChainView.h"
 #include "gui/PluginEditor.h"
+#include "gui/Scopes.h"
 #include "gui/Widgets.h"
+#include "gui/OverlayCard.h"
+#include "gui/TopBar.h"
+#include "gui/HubPanel.h"
+#include "gui/PresetBrowser.h"
+#include "gui/SmartStartPanel.h"
+#include "gui/SettingsOverlay.h"
+#include "gui/Onboarding.h"
 #include <algorithm>
 #include <cmath>
 
@@ -359,12 +367,13 @@ NL_TEST (ui_overlay_host)
     if (ne == nullptr) return;
 
     check (! ne->hasOverlay(), "no overlay at start");
-    ne->showOverlay (std::make_unique<SettingsOverlay> (*p, [] (float) {}, [] {}));
+    ne->showOverlay (std::make_unique<SettingsOverlay> (*p, [] (float) {}, [] {}), "Settings", overlay::Size::medium);
     check (ne->hasOverlay(), "showOverlay shows an overlay");
+    check (ne->overlaySize() == overlay::Size::medium, "the overlay keeps the size it was shown at");
     ne->closeOverlay();
     check (! ne->hasOverlay(), "closeOverlay removes it at once");
 
-    ne->showOverlay (std::make_unique<SettingsOverlay> (*p, [] (float) {}, [] {}));
+    ne->showOverlay (std::make_unique<SettingsOverlay> (*p, [] (float) {}, [] {}), "Settings", overlay::Size::medium);
     check (ne->keyPressed (juce::KeyPress (juce::KeyPress::escapeKey)) && ! ne->hasOverlay(), "Esc closes the overlay");
     check (! ne->keyPressed (juce::KeyPress ('x')) && ! ne->hasOverlay(), "other keys pass through");
 }
@@ -412,4 +421,333 @@ NL_TEST (ui_editor_construct_time)
     std::sort (ms.begin(), ms.end());
     check (ms[0] <= 150.0, "editor constructs in 150 ms or less (fastest of 5)",
            juce::String (ms[0], 1) + " ms, median " + juce::String (ms[2], 1) + " ms");
+}
+
+//==============================================================================
+// Overlay host, tabular figures, scale flag, labels and panel activity (wave 3).
+
+NL_TEST (ui_overlay_card_sizes)
+{
+    const juce::Rectangle<int> canvas (shell::kBaseW, shell::kBaseH);
+    const auto large = overlay::cardBounds (canvas, overlay::Size::large);
+    const auto medium = overlay::cardBounds (canvas, overlay::Size::medium);
+    const auto compact = overlay::cardBounds (canvas, overlay::Size::compact);
+    check (large.getWidth() == 1120 && large.getHeight() == 680, "large card is 1120 x 680 on the 1320 x 780 canvas",
+           juce::String (large.getWidth()) + " x " + juce::String (large.getHeight()));
+    check (medium.getWidth() == 640 && medium.getHeight() == 520, "medium card is 640 x 520");
+    check (compact.getWidth() == 560 && compact.getHeight() == 360, "compact card is 560 x 360");
+    check (large.getCentre() == canvas.getCentre() && medium.getCentre() == canvas.getCentre(), "cards are centred on the canvas");
+
+    // A smaller window: each card shrinks to the window less the margin, and stays centred.
+    const juce::Rectangle<int> small (800, 500);
+    const auto smallLarge = overlay::cardBounds (small, overlay::Size::large);
+    check (smallLarge.getWidth() == 800 - 2 * overlay::kMargin && smallLarge.getHeight() == 500 - 2 * overlay::kMargin,
+           "a large card shrinks to fit a small window", juce::String (smallLarge.getWidth()) + " x " + juce::String (smallLarge.getHeight()));
+    check (small.reduced (overlay::kMargin).contains (smallLarge) && smallLarge.getCentre() == small.getCentre(), "a shrunk card stays inside the margin and centred");
+    for (auto s : { overlay::Size::compact, overlay::Size::medium, overlay::Size::large })
+    {
+        const juce::Rectangle<int> tiny (240, 150);
+        check (tiny.contains (overlay::cardBounds (tiny, s)), "a card never leaves a tiny window");
+    }
+
+    // The component adds the shadow margin, and the content sits below the title row inside the card.
+    const auto comp = overlay::componentBounds (large);
+    check (comp.getWidth() == large.getWidth() + 2 * overlay::kShadow && comp.getCentre() == large.getCentre(), "the card component carries its shadow margin");
+    const auto body = overlay::bodyBounds (comp);
+    check (body.getY() >= comp.getY() + overlay::kShadow + overlay::kTitleH, "overlay content starts below the title row");
+    check (comp.reduced (overlay::kShadow).contains (body), "overlay content stays inside the card");
+    check (body.getWidth() >= 900 && body.getHeight() >= 560, "the large overlay body has room for the preset browser",
+           juce::String (body.getWidth()) + " x " + juce::String (body.getHeight()));
+}
+
+NL_TEST (ui_overlay_host_card)
+{
+    useTempSettings ("overlay_card");
+    applyTheme (tokens::Theme::dark);
+    auto p = tool::makeProc();
+    std::unique_ptr<juce::AudioProcessorEditor> editor (p->createEditor());
+    auto* ne = dynamic_cast<NorthlineEditor*> (editor.get());
+    if (ne == nullptr) { check (false, "editor created"); return; }
+
+    // Each overlay opens as a card with its size, and Esc closes it.
+    ne->openPresetBrowser();
+    check (ne->hasOverlay() && ne->overlaySize() == overlay::Size::large, "the preset browser opens as a large card");
+    check (ne->keyPressed (juce::KeyPress (juce::KeyPress::escapeKey)) && ! ne->hasOverlay(), "Esc closes the preset browser card");
+    ne->openHub();
+    check (ne->overlaySize() == overlay::Size::large, "the Instance Hub opens large");
+    ne->closeOverlay();
+    ne->openSmartStart();
+    check (ne->overlaySize() == overlay::Size::medium, "Smart Start opens medium");
+    ne->closeOverlay();
+    ne->openSettings();
+    check (ne->overlaySize() == overlay::Size::medium, "Settings opens medium");
+    ne->closeOverlay();
+    ne->openOnboarding();
+    check (ne->overlaySize() == overlay::Size::compact, "the first-run tour opens as a compact card");
+    ne->closeOverlay();
+    check (! ne->hasOverlay(), "closeOverlay leaves the editor without an overlay");
+}
+
+NL_TEST (ui_figures_tabular)
+{
+    const auto f = NorthlineLookAndFeel::font (12.0f);
+    const auto a = figures::layout (f, "-88.8");
+    const auto b = figures::layout (f, "-11.1");
+    check (std::abs (a.width - b.width) < 1.0e-3f, "tabular: same-length readouts have the same width",
+           juce::String (a.width, 2) + " vs " + juce::String (b.width, 2));
+    bool same = a.x.size() == b.x.size();
+    for (size_t i = 0; same && i < a.x.size(); ++i) same = std::abs (a.x[i] - b.x[i]) < 1.0e-3f;
+    check (same, "tabular: every character starts at the same x in both readouts");
+
+    const auto one = figures::layout (f, "1");
+    const auto eight = figures::layout (f, "8");
+    check (std::abs (one.width - eight.width) < 1.0e-3f, "tabular: a narrow 1 takes the width of an 8");
+    check (figures::layout (f, "11").width == figures::layout (f, "88").width, "tabular: digit pairs match");
+    check (figures::layout (f, "1.0").width < figures::layout (f, "10.0").width, "tabular: a shorter readout is narrower");
+    check (one.digitCell > 0.0f && one.x.size() == 1 && one.x[0] == 0.0f, "tabular: the layout starts at zero and reports the digit cell");
+    check (figures::layout (f, "").width == 0.0f && figures::layout (f, "").x.empty(), "tabular: empty text has no width");
+    check (figures::layout (f, "-18.0 dB").x.size() == 8, "tabular: every character gets a cell, spaces and units included");
+}
+
+NL_TEST (ui_scale_percent_text)
+{
+    check (scalePercentText (1.0f) == "100%", "scale text: 100 %");
+    check (scalePercentText (0.75f) == "75%", "scale text: 75 %");
+    check (scalePercentText (0.9f) == "90%", "scale text: a free size shows its percentage", scalePercentText (0.9f));
+    check (scalePercentText (1.333f) == "133%", "scale text: rounds to the whole percent");
+}
+
+NL_TEST (ui_scale_flag_roundtrip)
+{
+    auto p = tool::makeProc();
+    check (! p->isUiScaleSet(), "a new instance has no chosen size");
+
+    p->setUiScale (1.5f, false); // the editor applying the default: not the instance's own choice
+    check (! p->isUiScaleSet(), "applying a size without a user choice leaves the flag off");
+
+    p->setUiScale (1.0f); // the user picks 100 %
+    check (p->isUiScaleSet() && std::abs (p->getUiScale() - 1.0f) < 1.0e-6f, "a chosen 100 % sets the flag");
+
+    juce::MemoryBlock block;
+    p->getStateInformation (block);
+    auto q = tool::makeProc();
+    q->setStateInformation (block.getData(), (int) block.getSize());
+    check (q->isUiScaleSet(), "the flag survives a save and reload");
+    check (std::abs (q->getUiScale() - 1.0f) < 1.0e-6f, "a stored 100 % is kept on reload");
+
+    // A session saved before the flag existed has no flag, so the global default applies.
+    auto xml = juce::AudioProcessor::getXmlFromBinary (block.getData(), (int) block.getSize());
+    check (xml != nullptr, "the saved state is XML");
+    if (xml == nullptr) return;
+    xml->removeAttribute ("uiScaleSet");
+    juce::MemoryBlock old;
+    juce::AudioProcessor::copyXmlToBinary (*xml, old);
+    auto r = tool::makeProc();
+    r->setStateInformation (old.getData(), (int) old.getSize());
+    check (! r->isUiScaleSet(), "a session without the flag does not count as a chosen size");
+}
+
+NL_TEST (ui_scale_flag_editor)
+{
+    useTempSettings ("scale_flag");
+    UiSettings::get().setDefaultScale (1.25f);
+    auto p = tool::makeProc();
+    {
+        std::unique_ptr<juce::AudioProcessorEditor> editor (p->createEditor());
+        check (editor->getWidth() == juce::roundToInt (shell::kBaseW * 1.25f), "a size the user never chose opens at the global default (125 %)",
+               juce::String (editor->getWidth()));
+    }
+    p->setUiScale (1.0f); // the user chose 100 % for this instance
+    {
+        std::unique_ptr<juce::AudioProcessorEditor> editor (p->createEditor());
+        check (editor->getWidth() == shell::kBaseW, "a 100 % the user chose is kept, not replaced by the default", juce::String (editor->getWidth()));
+    }
+    UiSettings::get().setDefaultScale (1.0f);
+}
+
+NL_TEST (ui_label_stacking)
+{
+    std::vector<float> tops { 100.0f, 102.0f, 104.0f, 200.0f };
+    ui::stackLabelTops (tops, 12.0f);
+    check (tops[0] == 100.0f, "stacked labels: the first label stays on its line");
+    check (tops[1] - tops[0] >= 12.0f && tops[2] - tops[1] >= 12.0f, "stacked labels: close lines push labels apart", juce::String (tops[2], 1));
+    check (tops[3] == 200.0f, "stacked labels: a label far from the others does not move");
+}
+
+NL_TEST (ui_combo_placeholders)
+{
+    useTempSettings ("combos");
+    auto p = tool::makeProc();
+    std::unique_ptr<juce::AudioProcessorEditor> editor (p->createEditor());
+    auto* ne = dynamic_cast<NorthlineEditor*> (editor.get());
+    if (ne == nullptr) { check (false, "editor created"); return; }
+
+    // Open each overlay in turn and check that every combo box on the editor shows a value or a placeholder.
+    std::function<void (juce::Component&, std::vector<juce::ComboBox*>&)> collect = [&] (juce::Component& c, std::vector<juce::ComboBox*>& out)
+    {
+        for (auto* child : c.getChildren())
+        {
+            if (auto* box = dynamic_cast<juce::ComboBox*> (child)) out.push_back (box);
+            collect (*child, out);
+        }
+    };
+    auto blankCombos = [&] (const char* when)
+    {
+        std::vector<juce::ComboBox*> boxes;
+        collect (*ne, boxes);
+        int blank = 0;
+        for (auto* box : boxes)
+            if (box->getSelectedId() == 0 && box->getText().isEmpty() && box->getTextWhenNothingSelected().isEmpty()) ++blank;
+        check (blank == 0, juce::String ("every combo shows a value or a placeholder (") + when + ")", juce::String (blank) + " blank of " + juce::String ((int) boxes.size()));
+    };
+    blankCombos ("editor");
+    ne->openPresetBrowser();
+    blankCombos ("preset browser");
+    ne->closeOverlay();
+    ne->openHub();
+    blankCombos ("instance hub");
+    ne->closeOverlay();
+}
+
+NL_TEST (ui_cpu_footer_flag)
+{
+    auto p = tool::makeProc();
+    PrePanel pre (*p);
+    check (! pre.cpuFooterShown(), "the CPU footer is off by default");
+    pre.setShowCpu (true);
+    check (pre.cpuFooterShown(), "Show CPU turns the module CPU footer on");
+    pre.setShowCpu (false);
+    check (! pre.cpuFooterShown(), "and off again");
+}
+
+NL_TEST (ui_panel_activity_headless)
+{
+    useTempSettings ("activity");
+    auto p = tool::makeProc();
+    std::unique_ptr<juce::AudioProcessorEditor> editor (p->createEditor());
+    auto* ne = dynamic_cast<NorthlineEditor*> (editor.get());
+    if (ne == nullptr) { check (false, "editor created"); return; }
+    auto pump = [] { for (int i = 0; i < 4; ++i) juce::Timer::callPendingTimersSynchronously(); };
+
+    ne->selectModule (modEq);
+    pump();
+    check (ne->isPanelActive (modEq) && ! ne->isPanelActive (modPre), "the selected EQ panel is live (its analyser runs), the others are not",
+           "offline editors count as on screen");
+    ne->selectModule (modPre);
+    pump();
+    check (ne->isPanelActive (modPre) && ! ne->isPanelActive (modEq), "selecting PRE makes PRE live (harmonic taps) and EQ idle");
+
+    UiSettings::get().setConsoleLayout (true);
+    pump();
+    bool all = true;
+    for (int m = 0; m < numModules; ++m) all = all && ne->isPanelActive (m);
+    check (all, "console layout: every panel is on screen, so every panel is live");
+    UiSettings::get().setConsoleLayout (false);
+    pump();
+}
+
+NL_TEST (ui_render_editor_review)
+{
+    // Review aid, not a check: NL_RENDER_UI=<folder> (or 1 for build/ui_renders) writes PNGs of the editor
+    // at 75, 100 and 150 %, for every module selected, the four overlays, and the high-contrast theme.
+    const auto setting = juce::SystemStats::getEnvironmentVariable ("NL_RENDER_UI", {});
+    if (setting.isEmpty()) return;
+    const juce::File dir = setting == "1" ? juce::File::getCurrentWorkingDirectory().getChildFile ("build/ui_renders") : juce::File (setting);
+    dir.createDirectory();
+    useTempSettings ("render");
+
+    auto p = tool::makeProc();
+    p->loadFactoryPreset (1);
+    std::unique_ptr<juce::AudioProcessorEditor> editor (p->createEditor());
+    auto* ne = dynamic_cast<NorthlineEditor*> (editor.get());
+    if (ne == nullptr) { check (false, "editor created"); return; }
+
+    // Two seconds of a voice-like tone with hiss bursts, as the snapshot tool feeds.
+    juce::AudioBuffer<float> buf (2, 256);
+    juce::MidiBuffer midi;
+    juce::Random rng (11);
+    double phase = 0.0;
+    const double fs = 48000.0;
+    int n = 0;
+    auto feed = [&] (int blocks)
+    {
+        for (int b = 0; b < blocks; ++b, n += 256)
+        {
+            for (int i = 0; i < 256; ++i)
+            {
+                const double t = (n + i) / fs;
+                const double env = 0.5 + 0.5 * std::sin (2.0 * juce::MathConstants<double>::pi * 3.0 * t);
+                double v = 0.0;
+                for (int h = 1; h <= 8; ++h) v += std::sin (phase * h) / h;
+                phase += 2.0 * juce::MathConstants<double>::pi * 180.0 / fs;
+                const double hiss = (std::fmod (t, 0.6) > 0.5) ? (rng.nextFloat() * 2.0f - 1.0f) * 0.25 : 0.0;
+                const float x = (float) (0.22 * env * v + hiss);
+                buf.setSample (0, i, x);
+                buf.setSample (1, i, x * 0.92f);
+            }
+            p->processBlock (buf, midi);
+        }
+    };
+    auto pump = [&] (int ms) { for (int t = 0; t < ms; t += 34) { juce::Timer::callPendingTimersSynchronously(); juce::Thread::sleep (34); } };
+    auto save = [&] (const juce::String& name, juce::Component& c)
+    {
+        // Painted the way the window paints it (paintEntireComponent into an ARGB image).
+        juce::Image img (juce::Image::ARGB, c.getWidth(), c.getHeight(), true);
+        {
+            juce::Graphics g (img);
+            c.paintEntireComponent (g, false);
+        }
+        const auto& out = img;
+        juce::FileOutputStream os (dir.getChildFile (name + ".png"));
+        if (os.openedOk()) juce::PNGImageFormat().writeImageToStream (out, os);
+    };
+
+    feed (6 * 70);
+    pump (300);
+    for (int m = 0; m < numModules; ++m)
+    {
+        ne->selectModule (m);
+        feed (6 * 25);
+        pump (200);
+        save ("module" + juce::String (m) + "_100", *ne);
+    }
+    ne->selectModule (modPre);
+
+    ne->setScale (0.75f, false);
+    pump (100);
+    save ("main_75", *ne);
+    ne->setScale (1.5f, false);
+    pump (100);
+    save ("main_150", *ne);
+    ne->setScale (1.0f, false);
+    pump (100);
+    save ("main_100", *ne);
+
+    ne->openPresetBrowser();
+    pump (100);
+    save ("overlay_presets", *ne);
+    ne->closeOverlay();
+    ne->openSmartStart();
+    pump (100);
+    save ("overlay_smart", *ne);
+    ne->closeOverlay();
+    ne->openHub();
+    pump (100);
+    save ("overlay_hub", *ne);
+    ne->closeOverlay();
+    ne->openSettings();
+    pump (100);
+    save ("overlay_settings", *ne);
+    ne->closeOverlay();
+    ne->openOnboarding();
+    pump (100);
+    save ("overlay_tour", *ne);
+    ne->closeOverlay();
+
+    UiSettings::get().setTheme (tokens::Theme::highContrast);
+    pump (100);
+    save ("main_highcontrast", *ne);
+    UiSettings::get().setTheme (tokens::Theme::dark);
+    pump (100);
+    check (true, "render: editor views written to " + dir.getFullPathName());
 }
