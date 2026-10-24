@@ -2,6 +2,7 @@
 
 #include "Presets.h"
 #include "dsp/ChannelStrip.h"
+#include "smart/SmartStart.h"
 #include <map>
 
 namespace nl
@@ -77,6 +78,32 @@ public:
     bool loadUserPreset (const juce::File& file);
     void resetToDefaults();
 
+    //==============================================================================
+    // Compare and Delta (roadmap 9.3). Transient: never saved, reset when a state loads.
+    //  setCompare: -1 off, 0 the whole strip (loudness-matched through the Level Match trim),
+    //              1 + moduleId: that module bypassed, its learned level added back.
+    //  setDelta: PRE, GATE and EQ run in the strip; DE-ESS and COMP use their listen modes.
+    void setCompare (int target) { strip.setCompare (target); }
+    int getCompare() const { return strip.getCompare(); }
+    void setDelta (int moduleId, bool on);
+    bool getDelta (int moduleId) const;
+
+    //==============================================================================
+    // Smart Start (roadmap 9.1). Listen captures the input; the analysis runs in the background and its
+    // result is applied here as one undo step, with Spotlight set to the changed parameters.
+    bool smartListen (smart::Source source);
+    void smartCancel();
+    smart::SmartStart& getSmartStart() noexcept { return smartStart; }
+    bool applySmartResult (const smart::Result& result);
+
+    //==============================================================================
+    // Instance Hub (roadmap 9.2). The id is the registry key, valid while this instance exists.
+    int getHubId() const noexcept { return hubId; }
+    juce::String getTrackName() const;
+    juce::uint32 getTrackColourARGB() const;   // 0 when the host gives no colour
+    float getCpuLoadPercent() const noexcept { return cpuPercent.load (std::memory_order_relaxed); }
+    void updateTrackProperties (const TrackProperties& properties) override;
+
     // UI accessors: thread-safe, they return copies.
     juce::String getPresetName() const;
     std::vector<int> getFocus() const;
@@ -133,9 +160,19 @@ private:
     std::vector<int> focus;
     float uiScale = 1.0f;
 
+    // Smart Start, Instance Hub (message thread state, except cpuPercent and the capture buffer).
+    smart::SmartStart smartStart;
+    int hubId = 0;
+    juce::String trackName;             // guarded by stateLock
+    juce::uint32 trackColourARGB = 0;   // guarded by stateLock
+    std::atomic<float> cpuPercent { 0.0f }; // smoothed processBlock time, percent of the block duration
+    float plainValue (int index) const;
+    std::array<float, P::count> currentPlainValues() const;
+
     std::atomic<int> applyingDepth { 0 }; // > 0 while a snapshot is being applied (no undo entries then)
     uint32_t lastLearnedSerial = 0;       // message thread only
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE (NorthlineProcessor)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NorthlineProcessor)
 };
 } // namespace nl

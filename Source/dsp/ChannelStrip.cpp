@@ -55,6 +55,14 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
     monitor.prepare (fs, 10.0f);
     levelMatch.prepare (fs);
 
+    // Compare and Delta (9.3).
+    wholeW.prepare (fs, 20.0f);
+    modW.prepare (fs, 20.0f);
+    modGainV.prepare (fs, 20.0f);
+    for (auto& d : deltaW) d.prepare (fs, 20.0f);
+    cmpOutGain.prepare (fs, 20.0f);
+    learnAlpha = timeCoef (300.0f, fs);
+
     const int maxLat = maxModuleLatency (fs);
     for (int m = 0; m < numModules; ++m)
     {
@@ -62,6 +70,7 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
         if (testExtra[(size_t) m] > 0) testWet[(size_t) m].prepare (2, maxLat);
     }
     dryDelay.prepare (2, maxLat * numModules);
+    cmpDelay.prepare (2, maxLat * (numModules + 1));
 
     for (int c = 0; c < 2; ++c)
     {
@@ -69,7 +78,10 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
         tapDry[c].assign ((size_t) maxBlock, 0.0f);
         key[c].assign ((size_t) maxBlock, 0.0f);
         keyMs[c].assign ((size_t) maxBlock, 0.0f);
+        cmpBuf[c].assign ((size_t) maxBlock, 0.0f);
+        dryScratch[c].assign ((size_t) maxBlock, 0.0f);
     }
+    modGainBuf.assign ((size_t) maxBlock, 1.0f);
     sampleScratch.assign ((size_t) maxBlock, StereoSample {});
 
     // Consumers drop whatever the rings still hold from before this prepare.
@@ -104,6 +116,15 @@ void ChannelStrip::reset()
     outGain.snap();
     swapAmt.snap();
     mixAmt.snap();
+
+    // Compare and Delta: ramps settle on their targets, learned levels start again.
+    wholeW.snap();
+    modW.snap();
+    modGainV.snap();
+    for (auto& d : deltaW) d.snap();
+    cmpOutGain.snap();
+    cmpDelay.reset();
+    for (auto& l : learn) l = ModuleLearn {};
 
     levelMatch.resetMeasurement();
     levelMatch.update (pi (P::matchMode), pv (P::matchTrim));
@@ -255,6 +276,7 @@ void ChannelStrip::updateParams (bool force)
         inGain[1].setTarget ((pol == 2 || pol == 3) ? -g : g);
         swapAmt.setTarget (pb (P::inSwap) ? 1.0f : 0.0f);
         outGain.setTarget (dbToGain (pv (P::outGain)));
+        cmpOutGain.setTarget (dbToGain (pv (P::outGain)));
         mixAmt.setTarget (std::clamp (pv (P::globalMix) * 0.01f, 0.0f, 1.0f));
     }
 
@@ -428,6 +450,100 @@ void ChannelStrip::mixStage (float* const* io, int numCh, int n)
 }
 
 //==============================================================================
+//==============================================================================
+// Compare and Delta (9.3)
+
+void ChannelStrip::setDelta (int moduleId, bool on) noexcept
+{
+    if (moduleId != modPre && moduleId != modGate && moduleId != modEq) return;
+    // The message thread is the only writer, so a load and a store are enough.
+    const int mask = deltaMask.load (std::memory_order_relaxed);
+    const int bit = 1 << moduleId;
+    deltaMask.store (on ? (mask | bit) : (mask & ~bit), std::memory_order_relaxed);
+}
+
+bool ChannelStrip::getDelta (int moduleId) const noexcept
+{
+    if (moduleId < 0 || moduleId >= numModules) return false;
+    return ((deltaMask.load (std::memory_order_relaxed) >> moduleId) & 1) != 0;
+}
+
+// Smoothed energies of the module's wet and dry signals. The learned wet/dry level ratio is
+// refreshed on control ticks only, so it does not depend on the host block size. It is clamped to +/-12 dB.
+void ChannelStrip::learnModule (int id, const float* const* wet, const float* const* dry, int numCh, int n, uint32_t phase) noexcept
+{
+    auto& l = learn[(size_t) id];
+    float ew = l.ew, ed = l.ed, g = l.gainLin;
+    const float a = learnAlpha, b = 1.0f - a;
+    for (int i = 0; i < n; ++i)
+    {
+        if (ew > 1.0e-10f && ed > 1.0e-10f && ((phase + (uint32_t) i) % (uint32_t) kControlBlock) == 0)
+            g = std::clamp (std::sqrt (ew / ed), 0.25f, 4.0f);
+        float sw = 0.0f, sd = 0.0f;
+        for (int c = 0; c < numCh; ++c)
+        {
+            sw += wet[c][i] * wet[c][i];
+            sd += dry[c][i] * dry[c][i];
+        }
+        ew = a * ew + b * sw;
+        ed = a * ed + b * sd;
+    }
+    l.ew = ew;
+    l.ed = ed;
+    l.gainLin = g;
+}
+
+// Delta output: the module's output minus its latency-aligned input, crossfaded in and out.
+// dry may alias io (a silent module's output is its input).
+void ChannelStrip::applyDelta (int id, float* const* io, const float* const* dry, int numCh, int n, uint32_t phase) noexcept
+{
+    if (id != modPre && id != modGate && id != modEq) return;
+    auto& w = deltaW[(size_t) id];
+    if (w.isConstant() && w.target() == 0.0f) return;
+    w.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j)
+        {
+            const float d = base + slope * (float) (offset + j);
+            for (int c = 0; c < numCh; ++c) io[c][s + j] -= d * dry[c][s + j];
+        }
+    });
+}
+
+// Whole-strip Compare: crossfade from the processed output to the bypass path.
+void ChannelStrip::applyWholeCompare (float* const* io, int numCh, int n, uint32_t phase) noexcept
+{
+    wholeW.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j)
+        {
+            const float w = base + slope * (float) (offset + j);
+            for (int c = 0; c < numCh; ++c) io[c][s + j] += (cmpBuf[(size_t) c][(size_t) (s + j)] - io[c][s + j]) * w;
+        }
+    });
+}
+
+// Module Compare: the module is bypassed in the chain (its fade does that), and the bypassed chain is
+// scaled by the module's learned wet/dry level, so the two states are loudness-matched.
+void ChannelStrip::applyModuleCompare (float* const* io, int numCh, int n, uint32_t phase) noexcept
+{
+    float* g = modGainBuf.data();
+    modGainV.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j) g[s + j] = base + slope * (float) (offset + j);
+    });
+    modW.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
+    {
+        for (int j = 0; j < len; ++j)
+        {
+            const float w = base + slope * (float) (offset + j);
+            const float gain = 1.0f + w * (g[s + j] - 1.0f);
+            for (int c = 0; c < numCh; ++c) io[c][s + j] *= gain;
+        }
+    });
+}
+
+//==============================================================================
 void ChannelStrip::process (float* const* io, int numChannels, int n, const float* const* sidechain, int sidechainChannels)
 {
     jassert (n <= maxBlock);
@@ -441,6 +557,18 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         matchGain.setTarget (dbToGain (db));
     }
     monitor.set (pi (P::monitor));
+
+    // Compare and Delta targets (transient). The ramps run at control rate in the output stage.
+    const int cmpTarget = compareTarget.load (std::memory_order_relaxed);
+    const int deltaBits = deltaMask.load (std::memory_order_relaxed);
+    const bool cmpChanged = cmpTarget != lastCompareTarget;
+    lastCompareTarget = cmpTarget;
+    wholeW.setTarget (cmpTarget == 0 ? 1.0f : 0.0f);
+    modW.setTarget (cmpTarget >= 1 ? 1.0f : 0.0f);
+    modGainV.setTarget (cmpTarget >= 1 ? learn[(size_t) (cmpTarget - 1)].gainLin : 1.0f);
+    if (cmpChanged) modGainV.snap(); // a new compared module starts from its own learned level, not a glide
+    for (int m : { (int) modPre, (int) modGate, (int) modEq })
+        deltaW[(size_t) m].setTarget (((deltaBits >> m) & 1) != 0 ? 1.0f : 0.0f);
 
     MeterFrame frame;
     frame.numSamples = n;
@@ -475,6 +603,14 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         dryDelay.write (io, numChannels, n);
     }
 
+    // Compare path: the input stage output delayed by the total latency, so that it lines up with the
+    // processed output (which also carries the master section's latency). Always run, so it is primed.
+    {
+        float* cmp[2] { cmpBuf[0].data(), cmpBuf[1].data() };
+        cmpDelay.setDelay (latencyTotal.load (std::memory_order_relaxed));
+        cmpDelay.process (io, cmp, numChannels, n);
+    }
+
     // External key, converted lazily to M/S if a module needs it.
     const float* keyLr[2] { nullptr, nullptr };
     const float* keyMsPtr[2] { nullptr, nullptr };
@@ -499,7 +635,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         auto& fade = moduleFade[(size_t) id];
         const int lat = moduleLat[(size_t) id];
         const bool wasSilent = fade.isSilent();
-        fade.setTarget (moduleEnabled (id));
+        fade.setTarget (moduleEnabled (id) && cmpTarget != id + 1); // a compared module is bypassed
         if (fade.isSilent())
         {
             moduleUsSmoothed[(size_t) id] *= 0.9f;
@@ -509,6 +645,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
                 bypassDelay[(size_t) id].setDelay (lat);
                 bypassDelay[(size_t) id].process (io, io, numChannels, n);
             }
+            applyDelta (id, io, io, numChannels, n, clock.phase); // silent: input equals output, Delta is silence
             continue;
         }
         if (wasSilent)
@@ -545,8 +682,13 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         if (lat > 0) bypassDelay[(size_t) id].setDelay (lat);
         if (fade.isFullyOn())
         {
-            if (lat > 0) bypassDelay[(size_t) id].write (io, numChannels, n);
+            // Latency-aligned dry copy: the learned level of the module and Delta both need it.
+            float* dryNow[2] { dryScratch[0].data(), dryScratch[1].data() };
+            if (lat > 0) bypassDelay[(size_t) id].process (io, dryNow, numChannels, n);
+            else for (int c = 0; c < numChannels; ++c) std::copy (io[c], io[c] + n, dryNow[c]);
             runModule (id, io, numChannels, n, k);
+            learnModule (id, io, dryNow, numChannels, n, clock.phase);
+            applyDelta (id, io, dryNow, numChannels, n, clock.phase);
         }
         else
         {
@@ -568,6 +710,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
                 else w = fade.next();
                 for (int c = 0; c < numChannels; ++c) io[c][i] = dryPtr[c][i] + (io[c][i] - dryPtr[c][i]) * w;
             }
+            applyDelta (id, io, dryPtr, numChannels, n, clock.phase);
             if (fade.isSilent()) resetModule (id);
         }
 
@@ -581,9 +724,18 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     if (matchActive) matchStage (io, numChannels, n);
     if (mixActive) mixStage (io, numChannels, n);
     if (! outGain.isUnity()) outGain.apply (io, numChannels, n, clock.phase);
+    if (! cmpOutGain.isUnity())
+    {
+        float* cmp[2] { cmpBuf[0].data(), cmpBuf[1].data() };
+        cmpOutGain.apply (cmp, numChannels, n, clock.phase); // same ramp as outGain: the bypass keeps the output level
+    }
 
     master.process (io, numChannels, n);
     frame.limGr = master.getGainReductionDb();
+
+    // Compare (9.3): a bypassed module is replaced by its learned level, the whole strip by its input.
+    if (! modW.isConstant() || modW.target() > 0.0f) applyModuleCompare (io, numChannels, n, clock.phase);
+    if (! wholeW.isConstant() || wholeW.target() > 0.0f) applyWholeCompare (io, numChannels, n, clock.phase);
 
     if (numChannels == 2 && ! monitor.isIdentity()) monitor.process (io[0], io[1], n);
 
@@ -617,6 +769,16 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     for (int b = 0; b < 4; ++b) frame.eqDynGainDb[b] = moduleFade[modEq].isSilent() ? 0.0f : eq.getDynGainDb (b);
     for (int m = 0; m < 6; ++m) frame.moduleUs[m] = moduleUsSmoothed[(size_t) m];
     frame.totalUs = (float) ((double) (tEnd - tStart) * ticksToUs);
+    // Read-only copies for the Instance Hub.
+    float eqMax = 0.0f;
+    for (int b = 0; b < 4; ++b) eqMax = std::max (eqMax, std::abs (frame.eqDynGainDb[b]));
+    hubGr[0].store (frame.gateGr, std::memory_order_relaxed);
+    hubGr[1].store (frame.ds1Gr, std::memory_order_relaxed);
+    hubGr[2].store (frame.ds2Gr, std::memory_order_relaxed);
+    hubGr[3].store (eqMax, std::memory_order_relaxed);
+    hubGr[4].store (frame.compGr, std::memory_order_relaxed);
+    hubGr[5].store (frame.limGr, std::memory_order_relaxed);
+
     frames.push (frame);
 
     clock.advance (n); // once per block, after every user of the clock
