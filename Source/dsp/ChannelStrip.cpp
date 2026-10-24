@@ -131,6 +131,8 @@ void ChannelStrip::reset()
     cmpOutGain.snap();
     cmpDelay.reset();
     for (auto& l : learn) l = ModuleLearn {};
+    wholeLearn = ModuleLearn {};
+    wholeGain = 1.0f;
 
     levelMatch.resetMeasurement();
     levelMatch.update (pi (P::matchMode), pv (P::matchTrim));
@@ -522,11 +524,10 @@ bool ChannelStrip::getDelta (int moduleId) const noexcept
     return ((deltaMask.load (std::memory_order_relaxed) >> moduleId) & 1) != 0;
 }
 
-// Smoothed energies of the module's wet and dry signals. The learned wet/dry level ratio is
-// refreshed on control ticks only, so it does not depend on the host block size. It is clamped to +/-12 dB.
-void ChannelStrip::learnModule (int id, const float* const* wet, const float* const* dry, int numCh, int n, uint32_t phase) noexcept
+// Smoothed energies of a wet and a dry signal (a module, or the whole strip). The learned wet/dry level
+// ratio is refreshed on control ticks only, so it does not depend on the host block size. It is clamped to +/-12 dB.
+void ChannelStrip::learnLevel (ModuleLearn& l, const float* const* wet, const float* const* dry, int numCh, int n, uint32_t phase) const noexcept
 {
-    auto& l = learn[(size_t) id];
     float ew = l.ew, ed = l.ed, g = l.gainLin;
     const float a = learnAlpha, b = 1.0f - a;
     for (int i = 0; i < n; ++i)
@@ -564,15 +565,16 @@ void ChannelStrip::applyDelta (int id, float* const* io, const float* const* dry
     });
 }
 
-// Whole-strip Compare: crossfade from the processed output to the bypass path.
+// Whole-strip Compare: crossfade from the processed output to the bypass path at its learned level.
 void ChannelStrip::applyWholeCompare (float* const* io, int numCh, int n, uint32_t phase) noexcept
 {
+    const float g = wholeGain;
     wholeW.forEachSegment (n, phase, [&] (int s, int len, float base, float slope, int offset)
     {
         for (int j = 0; j < len; ++j)
         {
             const float w = base + slope * (float) (offset + j);
-            for (int c = 0; c < numCh; ++c) io[c][s + j] += (cmpBuf[(size_t) c][(size_t) (s + j)] - io[c][s + j]) * w;
+            for (int c = 0; c < numCh; ++c) io[c][s + j] += (g * cmpBuf[(size_t) c][(size_t) (s + j)] - io[c][s + j]) * w;
         }
     });
 }
@@ -618,6 +620,8 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     const bool cmpChanged = cmpTarget != lastCompareTarget;
     lastCompareTarget = cmpTarget;
     const bool modCompareOff = modW.isConstant() && modW.target() == 0.0f;
+    const bool wholeCompareOff = wholeW.isConstant() && wholeW.target() == 0.0f;
+    if (cmpChanged && cmpTarget == 0 && wholeCompareOff) wholeGain = wholeLearn.gainLin; // wholeW ramps up from 0
     wholeW.setTarget (cmpTarget == 0 ? 1.0f : 0.0f);
     modW.setTarget (cmpTarget >= 1 ? 1.0f : 0.0f);
     modGainV.setTarget (cmpTarget >= 1 ? learn[(size_t) (cmpTarget - 1)].gainLin : 1.0f);
@@ -763,7 +767,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             if (lat > 0) bypassDelay[(size_t) id].process (io, dryNow, numChannels, n);
             else for (int c = 0; c < numChannels; ++c) std::copy (io[c], io[c] + n, dryNow[c]);
             runModule (id, io, numChannels, n, k);
-            learnModule (id, io, dryNow, numChannels, n, clock.phase);
+            learnLevel (learn[(size_t) id], io, dryNow, numChannels, n, clock.phase);
             applyDelta (id, io, dryNow, numChannels, n, clock.phase);
         }
         else
@@ -817,7 +821,15 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     master.process (io, numChannels, n);
     frame.limGr = master.getGainReductionDb();
 
-    // Compare (9.3): a bypassed module is replaced by its learned level, the whole strip by its input.
+    // Whole-strip Compare plays the bypass path at the learned output/bypass level, so the A/B is
+    // loudness-matched with or without Level Match. Learned while that Compare is off, held while it is on.
+    if (wholeW.isConstant() && wholeW.target() == 0.0f)
+    {
+        const float* cmp[2] { cmpBuf[0].data(), cmpBuf[1].data() };
+        learnLevel (wholeLearn, io, cmp, numChannels, n, clock.phase);
+    }
+
+    // Compare (9.3): a bypassed module is replaced by its learned level, the whole strip by its input at its learned level.
     if (! modW.isConstant() || modW.target() > 0.0f) applyModuleCompare (io, numChannels, n, clock.phase);
     if (! wholeW.isConstant() || wholeW.target() > 0.0f) applyWholeCompare (io, numChannels, n, clock.phase);
 

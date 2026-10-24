@@ -324,6 +324,28 @@ NL_TEST (compare_whole_strip_is_loudness_matched_through_learned_trim)
            juce::String (levelA, 2) + " dB against " + juce::String (levelB, 2) + " dB");
 }
 
+NL_TEST (compare_whole_strip_is_loudness_matched_without_level_match)
+{
+    auto p = makeProc (kFs, 256);
+    setParam (*p, P::compOn, 1);
+    setParam (*p, P::compThresh, -30);
+    setParam (*p, P::compRatio, 8);
+    setParam (*p, P::outGain, -6); // the processed output is quieter than the input by several dB
+
+    auto in = sine (kFs, 1000.0, 0.1f, (int) (4.0 * kFs));
+    p->setCompare (-1);
+    const auto outA = render (*p, in, 256);
+    const float levelA = rmsDbRange (outA, (int) (3.0 * kFs), (int) (4.0 * kFs));
+    const float levelIn = rmsDbRange (in, (int) (3.0 * kFs), (int) (4.0 * kFs));
+    check (std::abs (levelA - levelIn) >= 3.0f, "the processed output differs from the input level",
+           juce::String (levelA - levelIn, 2) + " dB");
+    p->setCompare (0);
+    const auto outB = render (*p, in, 256);
+    const float levelB = rmsDbRange (outB, (int) (1.0 * kFs), (int) (4.0 * kFs));
+    check (std::abs (levelA - levelB) <= 0.5f, "Compare on the whole strip is loudness-matched without Level Match within 0.5 dB",
+           juce::String (levelA, 2) + " dB against " + juce::String (levelB, 2) + " dB");
+}
+
 NL_TEST (compare_switch_is_click_free_and_latency_constant)
 {
     auto p = makeProc (kFs, 256);

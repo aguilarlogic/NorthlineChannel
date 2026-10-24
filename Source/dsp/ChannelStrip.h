@@ -138,7 +138,7 @@ private:
 
     // Compare / Delta (9.3).
     struct ModuleLearn { float ew = 0.0f, ed = 0.0f, gainLin = 1.0f; }; // smoothed energy wet and dry, learned wet/dry level
-    void learnModule (int id, const float* const* wet, const float* const* dry, int numChannels, int n, uint32_t phase) noexcept;
+    void learnLevel (ModuleLearn& l, const float* const* wet, const float* const* dry, int numChannels, int n, uint32_t phase) const noexcept;
     void applyDelta (int id, float* const* io, const float* const* dry, int numChannels, int n, uint32_t phase) noexcept;
     void applyWholeCompare (float* const* io, int numChannels, int n, uint32_t phase) noexcept;
     void applyModuleCompare (float* const* io, int numChannels, int n, uint32_t phase) noexcept;
@@ -214,6 +214,8 @@ private:
     DelayLine cmpDelay;                          // input stage output delayed by the total latency
     std::vector<float> cmpBuf[2], dryScratch[2], modGainBuf;
     ModuleLearn learn[numModules];
+    ModuleLearn wholeLearn;                      // whole strip: processed output against the bypass path
+    float wholeGain = 1.0f;                      // wholeLearn's level, held while whole-strip Compare is on
     float learnAlpha = 0.0f;
     std::array<std::atomic<float>, 6> hubGr {};  // read by the Instance Hub
 
