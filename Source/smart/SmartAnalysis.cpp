@@ -551,7 +551,6 @@ Result analyze (const float* x, int n, double fs, Source source, const std::arra
         const int hopT = size / 2;
         const Fft fft (size);
         const auto win = hann (size);
-        const double sw2 = sumSquares (win);
         std::vector<cd> buf;
         std::vector<double> ps, avg ((size_t) size / 2 + 1, 0.0);
         int used = 0;

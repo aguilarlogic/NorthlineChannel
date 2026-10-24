@@ -137,8 +137,8 @@ NL_TEST (hub_scope_is_declared_as_this_process_only)
 // colours and some gain reduction, one group, and writes the Hub panel to hub.png. Does nothing otherwise.
 NL_TEST (hub_panel_snapshot_for_review)
 {
-    const char* dir = std::getenv ("NL_SNAPSHOT_DIR");
-    if (dir == nullptr) return;
+    const auto dir = juce::SystemStats::getEnvironmentVariable ("NL_SNAPSHOT_DIR", {});
+    if (dir.isEmpty()) return;
     auto a = makeProc();
     auto b = makeProc();
     auto c = makeProc();

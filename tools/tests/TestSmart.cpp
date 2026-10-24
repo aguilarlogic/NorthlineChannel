@@ -237,7 +237,7 @@ NL_TEST (smart_analysis_is_deterministic_and_rejects_silence)
         same = a.changes[i].param == b.changes[i].param && a.changes[i].to == b.changes[i].to && a.changes[i].reason == b.changes[i].reason;
     check (same, "analysis is deterministic: the same capture gives the same changes and reasons", juce::String ((int) a.changes.size()) + " changes");
 
-    std::vector<float> silence (kFs * 4, 0.0f);
+    std::vector<float> silence ((size_t) (kFs * 4), 0.0f);
     const Result s = analyze (silence.data(), (int) silence.size(), kFs, Source::Vocal, defaults);
     check (! s.valid && s.changes.empty(), "a silent capture gives no changes");
 }
@@ -446,8 +446,8 @@ NL_TEST (delta_output_minus_delta_is_input)
 // Smart Start panel to smart_start.png in that folder, for a visual check. Does nothing otherwise.
 NL_TEST (smart_panel_snapshot_for_review)
 {
-    const char* dir = std::getenv ("NL_SNAPSHOT_DIR");
-    if (dir == nullptr) return;
+    const auto dir = juce::SystemStats::getEnvironmentVariable ("NL_SNAPSHOT_DIR", {});
+    if (dir.isEmpty()) return;
     auto p = makeProc (kFs, 256);
     p->smartListen (Source::Vocal);
     render (*p, voiceSignal (13.5), 256);
