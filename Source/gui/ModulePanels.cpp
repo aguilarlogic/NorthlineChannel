@@ -462,9 +462,9 @@ PrePanel::PrePanel (NorthlineProcessor& p) : ModulePanel (p, modPre, P::preOn, P
 
 PrePanel::~PrePanel() { harmonics.detach(); }
 
-void PrePanel::showingChanged()
+void PrePanel::setActive (bool a)
 {
-    if (isShowing()) harmonics.attach();
+    if (a) harmonics.attach();
     else harmonics.detach();
 }
 
@@ -599,12 +599,16 @@ EqPanel::EqPanel (NorthlineProcessor& p) : ModulePanel (p, modEq, P::eqOn, P::eq
 
 EqPanel::~EqPanel() { analyser.detach(); }
 
-void EqPanel::showingChanged() { updateAnalyser(); }
+void EqPanel::setActive (bool a)
+{
+    active = a;
+    updateAnalyser();
+}
 
 void EqPanel::updateAnalyser()
 {
     const bool shown = analyserOn.getToggleState();
-    if (shown && isShowing()) analyser.attach();
+    if (shown && active) analyser.attach();
     else analyser.detach();
     if (display != nullptr) display->setAnalyserShown (shown);
 }

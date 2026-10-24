@@ -77,6 +77,7 @@ EqGeometry EqView::geometry() const noexcept
 void EqView::resized()
 {
     lastValues.clear(); // rebuild at the new size
+    analyserFrames = ~uint32_t (0); // the analyser paths are built in pixels too, so rebuild them on the next tick
 }
 
 void EqView::timerCallback()

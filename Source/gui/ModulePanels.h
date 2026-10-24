@@ -58,14 +58,16 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-    void visibilityChanged() override { showingChanged(); }
-    void parentHierarchyChanged() override { showingChanged(); }
+    void visibilityChanged() override { setActive (isShowing()); }
+    void parentHierarchyChanged() override { setActive (isShowing()); }
 
     int getModuleId() const noexcept { return moduleId; }
     // Shows or hides the Sidechain drawer (re-lays the panel out).
     void setDrawerOpen (bool open) { drawerOpen = open; resized(); }
     virtual int preferredWidth() const = 0;
     virtual void updateMeters (const MeterFrame&) {}
+    // Active while the panel is on screen or is the editor's detail view. Analysers run only while active.
+    virtual void setActive (bool) {}
     void setCpuUs (float us, float blockUs);
     std::function<void (int moduleId, int delta)> onMove;
 
@@ -90,7 +92,6 @@ protected:
     void applyPlan (juce::Rectangle<int> body, const Plan& plan);
 
     virtual void layoutBody (juce::Rectangle<int> body) = 0;
-    virtual void showingChanged() {}
 
     Knob* knob (int index, const juce::String& label);
     Chip* chip (int index, const juce::String& text);
@@ -142,10 +143,10 @@ public:
     explicit PrePanel (NorthlineProcessor& p);
     ~PrePanel() override;
     int preferredWidth() const override { return 214; }
+    void setActive (bool active) override;
 
 private:
     void layoutBody (juce::Rectangle<int>) override;
-    void showingChanged() override;
 
     HarmonicAnalyser harmonics;
     PreDisplay* display = nullptr;
@@ -196,13 +197,14 @@ public:
     explicit EqPanel (NorthlineProcessor& p);
     ~EqPanel() override;
     int preferredWidth() const override { return 300; }
+    void setActive (bool active) override;
 
 private:
     void layoutBody (juce::Rectangle<int>) override;
-    void showingChanged() override;
     void updateAnalyser();
 
     EqAnalyser analyser;
+    bool active = false;
     EqView* display = nullptr;
     juce::TextButton analyserOn { "ANALYSER" }, frozen { "FREEZE" };
     ChoiceBox* curve = nullptr;

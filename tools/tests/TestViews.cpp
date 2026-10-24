@@ -386,3 +386,92 @@ NL_TEST (views_transfer_curve_monotonic_and_drive)
     check (std::abs (a.outDb[TransferCurve::kPoints - 1] - 0.0f) < 3.0f || a.outDb[TransferCurve::kPoints - 1] > -10.0f,
            "transfer curve: low drive is near unity at full scale", juce::String (a.outDb[TransferCurve::kPoints - 1], 2));
 }
+
+//==============================================================================
+// Review aid, not a check: NL_RENDER_VIEWS=1 (or a folder) writes PNGs of every panel at the detail and
+// console sizes, with a tone and noise running through the strip so the displays have data.
+
+NL_TEST (views_render_panels)
+{
+    const auto setting = juce::SystemStats::getEnvironmentVariable ("NL_RENDER_VIEWS", {});
+    if (setting.isEmpty()) return;
+    const juce::File dir = setting == "1" ? juce::File::getCurrentWorkingDirectory().getChildFile ("build/views_renders") : juce::File (setting);
+    dir.createDirectory();
+
+    auto proc = tool::makeProc (kFs, 256);
+    using view::setPlain;
+    setPlain (*proc, P::satOn, 1.0f);
+    setPlain (*proc, P::satDrive, 60.0f);
+    setPlain (*proc, P::hpOn, 1.0f);
+    setPlain (*proc, P::hpFreq, 120.0f);
+    setPlain (*proc, P::lpOn, 1.0f);
+    setPlain (*proc, P::lpFreq, 9000.0f);
+    setPlain (*proc, P::eqMidGain, 6.0f);
+    setPlain (*proc, P::eqMidFreq, 1000.0f);
+    setPlain (*proc, P::eqMidDyn, 1.0f);
+    setPlain (*proc, P::eqMidDynThresh, -40.0f);
+    setPlain (*proc, P::eqMidDynRange, 6.0f);
+    setPlain (*proc, P::compOn, 1.0f);
+    setPlain (*proc, P::compThresh, -30.0f);
+    setPlain (*proc, P::compRatio, 4.0f);
+    setPlain (*proc, P::gateOn, 1.0f);
+    setPlain (*proc, P::gateThresh, -35.0f);
+    setPlain (*proc, P::dsOn, 1.0f);
+    setPlain (*proc, P::ds2On, 1.0f);
+
+    std::vector<std::unique_ptr<ModulePanel>> panels;
+    panels.push_back (std::make_unique<PrePanel> (*proc));
+    panels.push_back (std::make_unique<GatePanel> (*proc));
+    panels.push_back (std::make_unique<DsPanel> (*proc));
+    panels.push_back (std::make_unique<EqPanel> (*proc));
+    panels.push_back (std::make_unique<CompPanel> (*proc));
+    // Headless panels never report isShowing(), so a visibility change would deactivate them. Show first, then activate.
+    for (auto& p : panels) { p->setVisible (true); p->setActive (true); }
+
+    juce::AudioBuffer<float> work (juce::jmax (2, proc->getTotalNumInputChannels()), 256);
+    juce::MidiBuffer midi;
+    juce::Random rnd (3);
+    for (int blk = 0; blk < 400; ++blk)
+    {
+        work.clear();
+        const float burst = (blk % 40) < 20 ? 1.0f : 0.2f;
+        for (int i = 0; i < 256; ++i)
+        {
+            const float tone = 0.25f * burst * (float) std::sin (2.0 * kPiD * 1000.0 * (blk * 256 + i) / kFs);
+            const float v = tone + 0.08f * (rnd.nextFloat() * 2.0f - 1.0f);
+            for (int c = 0; c < work.getNumChannels(); ++c) work.setSample (c, i, v);
+        }
+        proc->processBlock (work, midi);
+        juce::Thread::sleep (1);
+    }
+
+    auto pumpTimers = [] (int ms) { for (int t = 0; t < ms; t += 34) { juce::Timer::callPendingTimersSynchronously(); juce::Thread::sleep (34); } };
+    pumpTimers (600); // lets the displays' timers run
+    for (auto& p : panels)
+    {
+        const std::vector<std::pair<int, int>> sizes { { 1020, 664 }, { p->preferredWidth(), 664 } };
+        for (bool drawer : { false, true })
+            for (auto [w, h] : sizes)
+            {
+                p->setDrawerOpen (drawer);
+                p->setBounds (0, 0, w, h);
+                pumpTimers (120);
+                juce::Image img (juce::Image::ARGB, w, h, true);
+                {
+                    juce::Graphics g (img);
+                    p->paintEntireComponent (g, false);
+                }
+                juce::Image out (juce::Image::ARGB, w, h, false); // ARGB: the RGB PNG path dropped content in review renders
+                {
+                    juce::Graphics g (out);
+                    g.fillAll (colours::background);
+                    g.drawImageAt (img, 0, 0);
+                }
+                const auto name = "module" + juce::String (p->getModuleId()) + "_" + juce::String (w) + "x" + juce::String (h) + (drawer ? "_drawer" : "") + ".png";
+                juce::FileOutputStream os (dir.getChildFile (name));
+                if (os.openedOk()) juce::PNGImageFormat().writeImageToStream (out, os);
+            }
+    }
+    for (auto& p : panels) p->setActive (false);
+    check (true, "render: panels written to " + dir.getFullPathName());
+}
