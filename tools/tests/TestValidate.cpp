@@ -72,10 +72,9 @@ NL_KNOWN_FAIL (validate_KNOWN_FAIL_compare_click,
                  juce::String ("step at switch ") + juce::String (atSwitch, 5) + ", steady " + juce::String (steady, 5));
 }
 
-// Reproducer for the "bypass.delayed" known failure. A bypassed strip with latency must output the input
-// delayed by its reported latency; NorthlineProcessor does not override processBlockBypassed, so it does not.
-NL_KNOWN_FAIL (validate_KNOWN_FAIL_bypass_delay,
-               "PluginProcessor.cpp: processBlockBypassed is not overridden (fix in NorthlineProcessor)")
+// A host-bypassed strip with latency must output the input delayed by its reported latency
+// (NorthlineProcessor::processBlockBypassed).
+NL_TEST (validate_bypass_delay)
 {
     constexpr double fs = 48000.0;
     constexpr int block = 256, at = 512, n = 2048;

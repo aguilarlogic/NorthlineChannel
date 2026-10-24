@@ -236,7 +236,23 @@ void NorthlineProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     for (auto& v : scCopy) v.assign ((size_t) preparedBlock, 0.0f);
     strip.prepare (sampleRate, preparedBlock, numCh);
     smartStart.prepare (sampleRate); // Smart Start capture buffer (allocated here, never on the audio thread)
+    bypassLine.prepare (2, ChannelStrip::maxModuleLatency (sampleRate) * (numModules + 1));
     setLatencySamples (strip.getLatencySamples());
+}
+
+// Host bypass (a host without a bypass parameter calls this): the input delayed by the reported
+// latency, so the bypassed track stays aligned with the others.
+void NorthlineProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+{
+    auto mainOut = getBusBuffer (buffer, false, 0);
+    const int numCh = juce::jmin (2, mainOut.getNumChannels());
+    const int n = buffer.getNumSamples();
+    if (numCh == 0 || n == 0) return;
+
+    if (numCh == 2 && getMainBusNumInputChannels() == 1) mainOut.copyFrom (1, 0, mainOut, 0, 0, n);
+    for (int c = numCh; c < mainOut.getNumChannels(); ++c) mainOut.clear (c, 0, n);
+    bypassLine.setDelay (getLatencySamples());
+    bypassLine.process (mainOut.getArrayOfWritePointers(), mainOut.getArrayOfWritePointers(), numCh, n);
 }
 
 void NorthlineProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -251,6 +267,12 @@ void NorthlineProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     // Mono input, stereo output: the input is on channel 0 only and feeds both channels. In that
     // layout the sidechain starts at channel 1, the same buffer channel as the right output.
     const bool monoToStereo = numCh == 2 && getMainBusNumInputChannels() == 1;
+
+    // Keep the host-bypass line current, so a switch to bypass is aligned from its first block.
+    {
+        const float* in[2] { mainOut.getReadPointer (0), mainOut.getReadPointer (monoToStereo ? 0 : numCh - 1) };
+        bypassLine.write (in, numCh, n);
+    }
 
     int scCh = 0;
     const float* sc[2] { nullptr, nullptr };

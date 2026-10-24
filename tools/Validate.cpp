@@ -44,11 +44,6 @@ struct KnownFail
 };
 
 constexpr KnownFail kKnownFails[] = {
-    { "bypass.delayed",
-      "PluginProcessor.cpp: NorthlineProcessor does not override processBlockBypassed, so the JUCE default "
-      "passes the input through undelayed. A host bypass (the VST3 client calls it when the host bypasses a "
-      "plug-in without a bypass parameter) then misaligns by the reported latency. Fix: override "
-      "processBlockBypassed to delay the input by getLatencySamples() through a delay line sized in prepareToPlay." },
     { "compare.click_free",
       "ChannelStrip.cpp: switching Compare from one module (PRE, GATE, DE-ESS or EQ) straight to module COMP gives a "
       "single-sample step of about 0.05 at the block where the switch lands (steady 0.002); other transitions are "

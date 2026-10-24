@@ -30,6 +30,8 @@ public:
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    using AudioProcessor::processBlockBypassed;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -176,6 +178,7 @@ private:
     std::array<juce::RangedAudioParameter*, P::count> params {};
     ChannelStrip strip;
     int preparedBlock = 512;
+    DelayLine bypassLine; // host bypass: the input delayed by the reported latency
     std::vector<float> scCopy[2]; // sidechain copy for mono-in layouts, where it shares a buffer channel with the output
 
     // Non-parameter state. Guarded by stateLock, which the audio thread never takes.
