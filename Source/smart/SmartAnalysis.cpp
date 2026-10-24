@@ -598,8 +598,8 @@ Result analyze (const float* x, int n, double fs, Source source, const std::arra
                 static const char* bandNames[4] { "Low", "Mid", "Tone", "High" };
                 add (eqBandOn (b), 1.0f, juce::String (bandNames[b]) + " band on");
                 add (eqBandGain (b), gain,
-                     juce::String::formatted ("%s %+.1f dB: %.1f dB against the %s target at %.0f Hz", bandNames[b], gain, dev[b],
-                                              sourceName (source), (double) kEqBandCentre[b]));
+                     juce::String (bandNames[b]) + juce::String::formatted (" %+.1f dB: %.1f dB against the ", gain, dev[b])
+                         + juce::String (sourceName (source)) + juce::String::formatted (" target at %.0f Hz", (double) kEqBandCentre[b]));
             }
         }
     }
@@ -628,16 +628,16 @@ Result analyze (const float* x, int n, double fs, Source source, const std::arra
             add (P::compOn, 1.0f, "Compressor on");
             static const char* compNames[] { "VCA", "FET", "OPT", "SOFT" };
             add (P::compType, (float) compTypeDefault (source),
-                 juce::String::formatted ("Comp type %s for %s", compNames[compTypeDefault (source)], sourceName (source)));
+                 juce::String ("Comp type ") + juce::String (compNames[compTypeDefault (source)]) + " for " + juce::String (sourceName (source)));
             add (P::compRatio, ratio, juce::String::formatted ("Ratio %.0f:1 for a crest factor of %.1f dB", ratio, crest));
             add (P::compThresh, thresh, juce::String::formatted ("Compressor threshold %.1f dB: about %.1f dB median GR", thresh, kCompGrTargetDb));
         }
     }
 
     //----------------------------------------------------------------------------
-    r.summary = juce::String::formatted ("%s: %d change%s. Noise %.0f dB, program %.0f dB.", sourceName (source),
-                                         (int) r.changes.size(), r.changes.size() == 1 ? "" : "s",
-                                         m.noiseDb, m.programDb);
+    r.summary = juce::String (sourceName (source)) + juce::String::formatted (": %d change", (int) r.changes.size())
+                + (r.changes.size() == 1 ? juce::String() : juce::String ("s"))
+                + juce::String::formatted (". Noise %.0f dB, program %.0f dB.", m.noiseDb, m.programDb);
     return r;
 }
 } // namespace nl::smart

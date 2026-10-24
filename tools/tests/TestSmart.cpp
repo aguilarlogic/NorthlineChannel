@@ -1,5 +1,7 @@
 #include "../TestUtil.h"
 #include "smart/SmartAnalysis.h"
+#include "gui/SmartStartPanel.h"
+#include <cstdlib>
 #include <algorithm>
 #include <cmath>
 #include <thread>
@@ -14,6 +16,19 @@ using namespace nl::smart;
 namespace
 {
 constexpr double kFs = 48000.0;
+// Writes a component snapshot as PNG. Used only by the development snapshot tests.
+static void writeSnapshot (juce::Component& c, const juce::File& file)
+{
+    juce::Image img = c.createComponentSnapshot (c.getLocalBounds());
+    juce::FileOutputStream out (file);
+    if (out.openedOk())
+    {
+        out.setPosition (0);
+        out.truncate();
+        juce::PNGImageFormat().writeImageToStream (img, out);
+    }
+}
+
 constexpr double kTwoPi = 2.0 * juce::MathConstants<double>::pi;
 
 // 120 Hz harmonic tone with a syllable envelope, plus sibilant bursts (second-difference noise,
@@ -425,4 +440,24 @@ NL_TEST (delta_output_minus_delta_is_input)
         check (worst < 1.0e-4f, juce::String ("Delta: output minus Delta is the input (") + moduleName (module) + ")",
                "max error " + juce::String (worst, 7));
     }
+}
+
+// Development aid, not a behaviour check: with NL_SNAPSHOT_DIR set, runs a real Listen and writes the
+// Smart Start panel to smart_start.png in that folder, for a visual check. Does nothing otherwise.
+NL_TEST (smart_panel_snapshot_for_review)
+{
+    const char* dir = std::getenv ("NL_SNAPSHOT_DIR");
+    if (dir == nullptr) return;
+    auto p = makeProc (kFs, 256);
+    p->smartListen (Source::Vocal);
+    render (*p, voiceSignal (13.5), 256);
+    for (int i = 0; i < 1000 && p->getSmartStart().getPhase() != SmartStart::Phase::Done; ++i)
+    {
+        p->servicePendingWork();
+        juce::Thread::sleep (10);
+    }
+    SmartStartPanel panel (*p);
+    panel.setSize (760, 640);
+    writeSnapshot (panel, juce::File (dir).getChildFile ("smart_start.png"));
+    check (true, "smart start panel snapshot written");
 }

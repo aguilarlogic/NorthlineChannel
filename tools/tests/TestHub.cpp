@@ -1,5 +1,7 @@
 #include "../TestUtil.h"
 #include "hub/InstanceRegistry.h"
+#include "gui/HubPanel.h"
+#include <cstdlib>
 #include <algorithm>
 #include <cmath>
 
@@ -11,6 +13,19 @@ using namespace nl;
 
 namespace
 {
+// Writes a component snapshot as PNG. Used only by the development snapshot tests.
+static void writeSnapshot (juce::Component& c, const juce::File& file)
+{
+    juce::Image img = c.createComponentSnapshot (c.getLocalBounds());
+    juce::FileOutputStream out (file);
+    if (out.openedOk())
+    {
+        out.setPosition (0);
+        out.truncate();
+        juce::PNGImageFormat().writeImageToStream (img, out);
+    }
+}
+
 float plainOf (NorthlineProcessor& p, int index)
 {
     auto* prm = p.param (index);
@@ -116,4 +131,42 @@ NL_TEST (hub_scope_is_declared_as_this_process_only)
     const auto row = std::find_if (rows.begin(), rows.end(), [&a] (const hub::InstanceInfo& r) { return r.id == a->getHubId(); });
     check (row != rows.end() && row->name == "Instance " + juce::String (a->getHubId()), "an instance without a host name gets a default name");
     check (row != rows.end() && std::isfinite (row->cpuPercent) && row->integratedLufs <= 0.0, "the row carries finite CPU and loudness values");
+}
+
+// Development aid, not a behaviour check: with NL_SNAPSHOT_DIR set, shows three instances with names,
+// colours and some gain reduction, one group, and writes the Hub panel to hub.png. Does nothing otherwise.
+NL_TEST (hub_panel_snapshot_for_review)
+{
+    const char* dir = std::getenv ("NL_SNAPSHOT_DIR");
+    if (dir == nullptr) return;
+    auto a = makeProc();
+    auto b = makeProc();
+    auto c = makeProc();
+    const char* names[] { "Kick In", "Snare Top", "Bass DI" };
+    const juce::uint32 trackColours[] { 0xffe04040, 0xffe9d35b, 0xff4fa3f7 };
+    NorthlineProcessor* all[] { a.get(), b.get(), c.get() };
+    for (int i = 0; i < 3; ++i)
+    {
+        juce::AudioProcessor::TrackProperties props;
+        props.name = names[i];
+        props.colourARGB = trackColours[i];
+        all[i]->updateTrackProperties (props);
+    }
+    setParam (*a, P::compOn, 1);
+    setParam (*a, P::compThresh, -30);
+    setParam (*a, P::compRatio, 6);
+    auto in = sine (48000.0, 120.0, 0.3f, 48000);
+    render (*a, in, 256);
+
+    auto& reg = hub::InstanceRegistry::instance();
+    const int g = reg.createGroup ("Drum compressors");
+    reg.addMember (g, a->getHubId());
+    reg.addMember (g, b->getHubId());
+    reg.linkParam (g, P::compThresh);
+
+    HubPanel panel;
+    panel.setSize (1020, 420);
+    writeSnapshot (panel, juce::File (dir).getChildFile ("hub.png"));
+    reg.removeGroup (g);
+    check (true, "hub panel snapshot written");
 }

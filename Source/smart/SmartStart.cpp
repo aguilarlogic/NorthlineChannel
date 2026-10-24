@@ -82,7 +82,7 @@ juce::String SmartStart::statusText() const
     {
         case Phase::Idle:      return "Pick a source and press Listen.";
         case Phase::Capturing: return capture.getState() == SmartCapture::Recording
-                                   ? juce::String::formatted ("Listening to %s for %.0f s...", sourceName (source), kCaptureSeconds)
+                                   ? juce::String ("Listening to ") + juce::String (sourceName (source)) + juce::String::formatted (" for %.0f s...", kCaptureSeconds)
                                    : "Waiting for audio. Start playback.";
         case Phase::Analysing: return "Analysing the capture...";
         case Phase::Done:      return result.summary;
