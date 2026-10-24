@@ -5,3 +5,4 @@ external/JUCE/
 .claude/
 external/clap-juce-extensions/
 dist/
+build-asan/

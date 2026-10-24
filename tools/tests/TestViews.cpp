@@ -117,7 +117,7 @@ NL_TEST (views_scope_tap_prepare_discards)
     ScopeTap tap;
     tap.prepare (kFs);
     drain (tap);
-    std::vector<float> s (240, 0.5f);
+    std::vector<float> s (480, 0.5f); // the last process() call below reads 480 samples
     const float* in[1] { s.data() };
     for (int c = 0; c < 3; ++c) tap.process (in, in, 1, 240, 0.0f, -120.0f);
     tap.prepare (96000.0);

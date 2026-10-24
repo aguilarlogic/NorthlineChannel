@@ -80,11 +80,21 @@ public:
         }
     }
 
-    // Largest magnitude of len samples (SIMD over the block).
+    // Largest magnitude of len samples. Reads exactly len samples (four independent maxima, so the loop is not
+    // a single dependency chain).
     static float peakOf (const float* x, int len) noexcept
     {
-        const auto range = juce::FloatVectorOperations::findMinAndMax (x, len);
-        return std::max (std::abs (range.getStart()), std::abs (range.getEnd()));
+        float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
+        int j = 0;
+        for (; j + 4 <= len; j += 4)
+        {
+            m0 = std::max (m0, std::abs (x[j]));
+            m1 = std::max (m1, std::abs (x[j + 1]));
+            m2 = std::max (m2, std::abs (x[j + 2]));
+            m3 = std::max (m3, std::abs (x[j + 3]));
+        }
+        for (; j < len; ++j) m0 = std::max (m0, std::abs (x[j]));
+        return std::max (std::max (m0, m1), std::max (m2, m3));
     }
 
     // UI thread. Copies up to maxCount points, oldest first. The first call after a prepare() discards

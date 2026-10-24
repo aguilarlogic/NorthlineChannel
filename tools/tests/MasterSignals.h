@@ -64,7 +64,7 @@ inline Buf concat (const std::vector<Buf>& parts)
 // Runs a buffer through a MeterHub in blocks of `block` samples.
 inline void feed (MeterHub& hub, const Buf& b, int block, int from = 0, int to = -1)
 {
-    if (to < 0) to = b.getNumSamples();
+    if (to < 0 || to > b.getNumSamples()) to = b.getNumSamples(); // never read past the buffer
     const float* ch[2] { b.getReadPointer (0), b.getReadPointer (1) };
     for (int pos = from; pos < to; pos += block)
     {
