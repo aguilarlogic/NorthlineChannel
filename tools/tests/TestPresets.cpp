@@ -121,9 +121,14 @@ RunResult runPreset (NorthlineProcessor& p, const juce::AudioBuffer<float>& in)
     return r;
 }
 
+// One folder per process, so test runs in parallel (other worktrees, CI shards) never share files.
+// It is removed when the process exits.
 juce::File testFolder()
 {
-    return juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NorthlineChannelTests").getChildFile ("Presets");
+    struct Folder { juce::File dir; ~Folder() { dir.deleteRecursively(); } };
+    static const Folder folder { juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getChildFile ("NorthlineChannelTests").getChildFile ("Presets-" + juce::Uuid().toString()) };
+    return folder.dir;
 }
 } // namespace
 
