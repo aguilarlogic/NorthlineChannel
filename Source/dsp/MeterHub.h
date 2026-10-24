@@ -3,8 +3,10 @@
 #include "Common.h"
 #include "LoudnessFilters.h"
 #include "LoudnessTruePeak.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <type_traits>
 #include <vector>
@@ -28,19 +30,183 @@ struct MeterSnapshot
 };
 static_assert (std::is_trivially_copyable_v<MeterSnapshot> && sizeof (MeterSnapshot) % 8 == 0, "MeterSnapshot must be copyable as 64-bit words");
 
+// One vectorscope sample: a decimated output pair.
+struct ScopePair
+{
+    float l = 0.0f, r = 0.0f;
+};
+
+// Single-producer, single-consumer ring of stereo pairs (vectorscope feed). The producer (audio
+// thread) never waits or allocates. If the consumer falls more than Capacity pairs behind, the
+// oldest pairs are dropped and counted. Each pair is one 64-bit atomic, so a slot is never torn.
+// Capacity must be a power of two.
+template <size_t Capacity>
+class PairRing
+{
+    static_assert (Capacity >= 2 && (Capacity & (Capacity - 1)) == 0, "PairRing capacity must be a power of two");
+
+public:
+    // Producer.
+    void push (float l, float r) noexcept
+    {
+        const uint64_t w = written.load (std::memory_order_relaxed);
+        slots[(size_t) (w & (Capacity - 1))].store (pack (l, r), std::memory_order_relaxed);
+        written.store (w + 1, std::memory_order_release);
+    }
+
+    // Consumer: copies up to maxCount unread pairs into out, oldest first. Returns the number copied.
+    // Pairs the producer overwrites while the copy runs are discarded as well (best effort under
+    // concurrency; exact when producer and consumer do not overlap).
+    size_t pop (ScopePair* out, size_t maxCount) noexcept
+    {
+        const uint64_t w = written.load (std::memory_order_acquire);
+        uint64_t first = consumed;
+        if (w - first > Capacity)
+        {
+            dropped += w - Capacity - first;
+            first = w - Capacity;
+        }
+        size_t n = (size_t) std::min<uint64_t> (w - first, (uint64_t) maxCount);
+        for (size_t i = 0; i < n; ++i)
+            out[i] = unpack (slots[(size_t) ((first + i) & (Capacity - 1))].load (std::memory_order_relaxed));
+
+        // Entries with index + Capacity <= the newest write may have been overwritten during the copy.
+        const uint64_t w2 = written.load (std::memory_order_acquire);
+        const uint64_t unsafeBelow = w2 >= Capacity ? w2 - Capacity + 1 : 0;
+        const size_t lost = unsafeBelow > first ? (size_t) std::min<uint64_t> (unsafeBelow - first, n) : 0;
+        if (lost > 0)
+        {
+            std::copy (out + lost, out + n, out);
+            n -= lost;
+            dropped += lost;
+        }
+        consumed = first + n + lost;
+        return n;
+    }
+
+    // Consumer side: pairs dropped because the consumer was too slow.
+    uint64_t droppedCount() const noexcept { return dropped; }
+
+private:
+    static uint64_t pack (float l, float r) noexcept
+    {
+        uint32_t a, b;
+        std::memcpy (&a, &l, 4);
+        std::memcpy (&b, &r, 4);
+        return ((uint64_t) b << 32) | (uint64_t) a;
+    }
+
+    static ScopePair unpack (uint64_t v) noexcept
+    {
+        const uint32_t a = (uint32_t) v, b = (uint32_t) (v >> 32);
+        ScopePair p;
+        std::memcpy (&p.l, &a, 4);
+        std::memcpy (&p.r, &b, 4);
+        return p;
+    }
+
+    std::atomic<uint64_t> written { 0 };
+    std::array<std::atomic<uint64_t>, Capacity> slots {};
+    uint64_t consumed = 0, dropped = 0; // consumer side
+};
+
+// Fenwick (binary indexed) tree: point update and prefix sum in O(log n), and a descent that finds
+// the bin where a running sum passes a value. Used for the gated loudness statistics.
+template <typename T>
+class FenwickTree
+{
+public:
+    void assign (int n)
+    {
+        size = n;
+        top = 1;
+        while (top * 2 <= n) top *= 2;
+        t.assign ((size_t) n + 1, T {});
+    }
+
+    void clear() noexcept { std::fill (t.begin(), t.end(), T {}); }
+
+    void add (int index, T v) noexcept
+    {
+        for (int i = index + 1; i <= size; i += i & -i) t[(size_t) i] += v;
+    }
+
+    // Sum of bins [0, n).
+    T prefix (int n) const noexcept
+    {
+        T s {};
+        for (int i = n; i > 0; i -= i & -i) s += t[(size_t) i];
+        return s;
+    }
+
+    // Largest n in [0, size] with prefix(n) <= limit. Bin n then holds the item number `limit`
+    // (0-based), and equals size when there is no such item.
+    int lastWithin (T limit) const noexcept
+    {
+        int pos = 0;
+        for (int step = top; step > 0; step >>= 1)
+            if (pos + step <= size && t[(size_t) (pos + step)] <= limit)
+            {
+                pos += step;
+                limit -= t[(size_t) pos];
+            }
+        return pos;
+    }
+
+private:
+    int size = 0, top = 1;
+    std::vector<T> t;
+};
+
+// Blocks of loudness, binned at 0.01 LU from -70 LUFS: the count and the summed energy per bin.
+struct GatedHistogram
+{
+    FenwickTree<uint64_t> count;
+    FenwickTree<double> energy;
+    uint64_t total = 0;
+    double totalEnergy = 0.0;
+
+    void assign (int bins)
+    {
+        count.assign (bins);
+        energy.assign (bins);
+        clear();
+    }
+
+    void clear() noexcept
+    {
+        count.clear();
+        energy.clear();
+        total = 0;
+        totalEnergy = 0.0;
+    }
+
+    void add (int bin, double blockEnergy) noexcept
+    {
+        count.add (bin, 1);
+        energy.add (bin, blockEnergy);
+        ++total;
+        totalEnergy += blockEnergy;
+    }
+};
+
 // Processor-owned loudness and peak metering (BS.1770-4 / EBU R128 / Tech 3341 / Tech 3342),
 // fed on the audio thread after the limiter, so it measures exactly what leaves the plugin,
 // also while the editor is closed and during offline renders.
 //
 // Threads: process()/accumulate()/publish()/reset()/prepare() belong to the audio side.
 // read(), readGrHistory(), resetIntegrated(), setTransportPlaying() and the option setters are
-// safe from any thread (read() is a seqlock reader, the others are atomic requests).
+// safe from any thread (read() is a seqlock reader, the others are atomic requests). scope() is
+// the consumer end of the vectorscope ring: one consumer thread (the UI) owns it.
 // Nothing allocates after prepare().
 class MeterHub
 {
 public:
     static constexpr int kGrPointsPerSecond = 100; // gain-reduction history resolution
     static constexpr int kGrHistoryPoints = 1000;  // 10 s
+    static constexpr int kScopeDecimation = 4;     // vectorscope: one pair per 4 samples
+    static constexpr size_t kScopeCapacity = 2048; // pairs (about 170 ms at 48 kHz)
+    using ScopeRing = PairRing<kScopeCapacity>;
 
     void prepare (double sampleRate, int /*maxBlock*/)
     {
@@ -51,10 +217,8 @@ public:
         KWeighting::design (fs, kwProto[0], kwProto[1]);
         vu.prepare (fs / kControlBlock);
         corrDecay = std::exp (-(double) kControlBlock / (0.3 * fs));
-        histCount.assign ((size_t) kBins, 0u);
-        histEnergy.assign ((size_t) kBins, 0.0);
-        lraCount.assign ((size_t) kBins, 0u);
-        lraEnergy.assign ((size_t) kBins, 0.0);
+        histogram.assign (kBins);
+        lraHistogram.assign (kBins);
         reset();
     }
 
@@ -63,13 +227,11 @@ public:
     {
         for (int c = 0; c < 2; ++c)
         {
-            kw[c][0] = kwProto[0];
-            kw[c][1] = kwProto[1];
-            kw[c][0].reset();
-            kw[c][1].reset();
-            tp[c].reset();
+            kw[c][0].setup (kwProto[0]);
+            kw[c][1].setup (kwProto[1]);
             acc[c] = 0.0;
         }
+        tps.reset();
         subRing.fill (0.0);
         subHead = 0;
         subCount = 0;
@@ -80,6 +242,7 @@ public:
         accXY = accXX = accYY = 0.0;
         vuAcc = 0.0;
         vu.reset();
+        scopePhase = 0;
         for (auto& g : grRing) g.store (0.0f, std::memory_order_relaxed);
         grHead.store (0, std::memory_order_relaxed);
         grBinCount = 0;
@@ -100,6 +263,8 @@ public:
     // transport is stopped; with `reset`, it restarts from scratch when the transport starts.
     void setPauseIntegrationWhenStopped (bool pause) noexcept { pauseWhenStopped.store (pause); }
     void setResetIntegrationOnPlay (bool reset) noexcept { resetOnPlay.store (reset); }
+    bool pauseIntegrationWhenStopped() const noexcept { return pauseWhenStopped.load(); }
+    bool resetIntegrationOnPlay() const noexcept { return resetOnPlay.load(); }
 
     // Set by the limiter section before each segment: output samples (or inter-sample peaks when
     // `truePeak`) above `linear` count as overs. 0 disables counting.
@@ -132,6 +297,7 @@ public:
                     sx[c][j] = std::abs (s) <= 1.0e6f ? s : 0.0f; // NaN and Inf measure as silence
                 }
             processChunk (sx, nc, len);
+            pushScope (sx, nc, len);
             i += len;
             ctrlCount += len;
             subCount += len;
@@ -208,6 +374,9 @@ public:
         return n;
     }
 
+    // Vectorscope feed: every kScopeDecimation-th output pair. The UI pops from it.
+    ScopeRing& scope() noexcept { return scopeRing; }
+
     // Audio thread: the limiter's gain reduction (dB, <= 0) over the last `len` samples.
     void pushGainReduction (float grDb, int len) noexcept
     {
@@ -237,7 +406,7 @@ private:
     static constexpr int kBins = 9000;         // -70 .. +20 LUFS
     static constexpr size_t kWords = sizeof (MeterSnapshot) / 8;
 
-    static float linToDb (float lin) noexcept { return lin > 1.0e-10f ? 20.0f * std::log10 (lin) : -200.0f; }
+    static float linToDb (float lin) noexcept { return lin > 1.0e-10f ? fastGainToDb (lin) : -200.0f; }
 
     bool gatingOn() const noexcept { return ! (pauseWhenStopped.load (std::memory_order_relaxed) && ! playing.load (std::memory_order_relaxed)); }
 
@@ -246,15 +415,13 @@ private:
         const bool pl = playing.load (std::memory_order_relaxed);
         if (pl && ! wasPlaying && resetOnPlay.load (std::memory_order_relaxed)) clearIntegratedData();
         wasPlaying = pl;
-        if (resetPending.exchange (false)) clearIntegratedData();
+        if (resetPending.load (std::memory_order_relaxed) && resetPending.exchange (false)) clearIntegratedData();
     }
 
     void clearIntegratedData() noexcept
     {
-        std::fill (histCount.begin(), histCount.end(), 0u);
-        std::fill (histEnergy.begin(), histEnergy.end(), 0.0);
-        std::fill (lraCount.begin(), lraCount.end(), 0u);
-        std::fill (lraEnergy.begin(), lraEnergy.end(), 0.0);
+        histogram.clear();
+        lraHistogram.clear();
         integrated = -200.0;
         lra = 0.0;
         lraLow = lraHigh = -200.0;
@@ -268,22 +435,46 @@ private:
 
     void processChunk (const float (&sx)[2][kControlBlock], int nc, int len) noexcept
     {
-        // Sample peak, K-weighted energy.
-        for (int c = 0; c < nc; ++c)
+        // Sample peak and K-weighted energy. The two channels run in one loop: their biquad chains
+        // are independent, and interleaving them hides most of the filter's feedback latency.
+        if (nc == 2)
         {
-            float pk = spMax[c];
-            double e = acc[c]; // sequential accumulation: the sum does not depend on how the stream was cut into blocks
-            auto& s1 = kw[c][0];
-            auto& s2 = kw[c][1];
+            float pk0 = spMax[0], pk1 = spMax[1];
+            double e0 = acc[0], e1 = acc[1];
+            auto& a0 = kw[0][0];
+            auto& b0 = kw[0][1];
+            auto& a1 = kw[1][0];
+            auto& b1 = kw[1][1];
             for (int j = 0; j < len; ++j)
             {
-                const float x = sx[c][j];
+                const float x0 = sx[0][j], x1 = sx[1][j];
+                pk0 = std::max (pk0, std::abs (x0));
+                pk1 = std::max (pk1, std::abs (x1));
+                const double y0 = b0.process (a0.process ((double) x0));
+                const double y1 = b1.process (a1.process ((double) x1));
+                e0 += y0 * y0;
+                e1 += y1 * y1;
+            }
+            spMax[0] = pk0;
+            spMax[1] = pk1;
+            acc[0] = e0;
+            acc[1] = e1;
+        }
+        else
+        {
+            float pk = spMax[0];
+            double e = acc[0];
+            auto& s1 = kw[0][0];
+            auto& s2 = kw[0][1];
+            for (int j = 0; j < len; ++j)
+            {
+                const float x = sx[0][j];
                 pk = std::max (pk, std::abs (x));
                 const double y = s2.process (s1.process ((double) x));
                 e += y * y;
             }
-            spMax[c] = pk;
-            acc[c] = e;
+            spMax[0] = pk;
+            acc[0] = e;
         }
 
         // Correlation and VU inputs.
@@ -345,6 +536,17 @@ private:
         }
     }
 
+    // Vectorscope: every kScopeDecimation-th output pair, counted across blocks.
+    void pushScope (const float (&sx)[2][kControlBlock], int nc, int len) noexcept
+    {
+        const int r = nc > 1 ? 1 : 0;
+        for (int j = 0; j < len; ++j)
+        {
+            if (scopePhase == 0) scopeRing.push (sx[0][j], sx[r][j]);
+            scopePhase = scopePhase + 1 == kScopeDecimation ? 0 : scopePhase + 1;
+        }
+    }
+
     void controlTick (int nc) noexcept
     {
         ctrlCount = 0;
@@ -365,7 +567,7 @@ private:
         vu.tick ((double) VuBallistics::kSineRmsCal * vuAcc / kControlBlock);
         vuAcc = 0.0;
         const double v = vu.value();
-        vuDbNow = v > 1.0e-10 ? (float) (20.0 * std::log10 (v)) : -200.0f;
+        vuDbNow = v > 1.0e-10 ? fastGainToDb ((float) v) : -200.0f;
     }
 
     void endSubBlock() noexcept
@@ -402,6 +604,8 @@ private:
 
     static int binOf (double lufs) noexcept { return std::clamp ((int) std::floor ((lufs - kHistMin) * kBinsPerLu), 0, kBins - 1); }
     static double binCentre (int b) noexcept { return kHistMin + ((double) b + 0.5) / kBinsPerLu; }
+    // First bin at or above a relative gate (LUFS).
+    static int gateStart (double relGate) noexcept { return std::clamp ((int) std::ceil ((relGate - kHistMin) * kBinsPerLu - 0.5), 0, kBins); }
 
     void endHop (double blockEnergy, double shortEnergy) noexcept
     {
@@ -409,22 +613,12 @@ private:
         if (sinceReset >= (uint32_t) kMomentarySubs)
         {
             const double l = energyToLufs (blockEnergy);
-            if (l > kHistMin)
-            {
-                const int b = binOf (l);
-                ++histCount[(size_t) b];
-                histEnergy[(size_t) b] += blockEnergy;
-            }
+            if (l > kHistMin) histogram.add (binOf (l), blockEnergy);
         }
         if (sinceReset >= (uint32_t) kShortSubs)
         {
             const double l = energyToLufs (shortEnergy);
-            if (l > kHistMin)
-            {
-                const int b = binOf (l);
-                ++lraCount[(size_t) b];
-                lraEnergy[(size_t) b] += shortEnergy;
-            }
+            if (l > kHistMin) lraHistogram.add (binOf (l), shortEnergy);
         }
         computeIntegrated();
         computeLra();
@@ -433,54 +627,29 @@ private:
     // Absolute gate is the histogram floor; the relative gate is 10 LU below the absolute-gated mean.
     void computeIntegrated() noexcept
     {
-        double sum = 0.0;
-        uint64_t count = 0;
-        for (int b = 0; b < kBins; ++b)
-        {
-            sum += histEnergy[(size_t) b];
-            count += histCount[(size_t) b];
-        }
-        if (count == 0) { integrated = -200.0; return; }
-        const double relGate = energyToLufs (sum / (double) count) - 10.0;
-        const int start = std::clamp ((int) std::ceil ((relGate - kHistMin) * kBinsPerLu - 0.5), 0, kBins);
-        sum = 0.0;
-        count = 0;
-        for (int b = start; b < kBins; ++b)
-        {
-            sum += histEnergy[(size_t) b];
-            count += histCount[(size_t) b];
-        }
-        integrated = count > 0 ? energyToLufs (sum / (double) count) : -200.0;
+        if (histogram.total == 0) { integrated = -200.0; return; }
+        const double relGate = energyToLufs (histogram.totalEnergy / (double) histogram.total) - 10.0;
+        const int start = gateStart (relGate);
+        const uint64_t n = histogram.total - histogram.count.prefix (start);
+        const double e = histogram.totalEnergy - histogram.energy.prefix (start);
+        integrated = n > 0 ? energyToLufs (e / (double) n) : -200.0;
     }
 
     // EBU Tech 3342: short-term values above -70 LUFS, relative gate 20 LU below their power mean,
     // then the 10th and 95th percentiles of what remains.
     void computeLra() noexcept
     {
-        double sum = 0.0;
-        uint64_t count = 0;
-        for (int b = 0; b < kBins; ++b)
-        {
-            sum += lraEnergy[(size_t) b];
-            count += lraCount[(size_t) b];
-        }
-        if (count == 0) { lra = 0.0; lraLow = lraHigh = -200.0; return; }
-        const double relGate = energyToLufs (sum / (double) count) - 20.0;
-        const int start = std::clamp ((int) std::ceil ((relGate - kHistMin) * kBinsPerLu - 0.5), 0, kBins);
-        uint64_t n = 0;
-        for (int b = start; b < kBins; ++b) n += lraCount[(size_t) b];
+        if (lraHistogram.total == 0) { lra = 0.0; lraLow = lraHigh = -200.0; return; }
+        const double relGate = energyToLufs (lraHistogram.totalEnergy / (double) lraHistogram.total) - 20.0;
+        const int start = gateStart (relGate);
+        const uint64_t before = lraHistogram.count.prefix (start);
+        const uint64_t n = lraHistogram.total - before;
         if (n == 0) { lra = 0.0; lraLow = lraHigh = -200.0; return; }
         const uint64_t idxLow = (uint64_t) std::llround ((double) (n - 1) * 0.10);
         const uint64_t idxHigh = (uint64_t) std::llround ((double) (n - 1) * 0.95);
-        uint64_t cum = 0;
-        int bLow = -1, bHigh = -1;
-        for (int b = start; b < kBins; ++b)
-        {
-            cum += lraCount[(size_t) b];
-            if (bLow < 0 && cum > idxLow) bLow = b;
-            if (bHigh < 0 && cum > idxHigh) { bHigh = b; break; }
-        }
-        if (bLow < 0 || bHigh < 0) { lra = 0.0; return; }
+        const int bLow = lraHistogram.count.lastWithin (before + idxLow);
+        const int bHigh = lraHistogram.count.lastWithin (before + idxHigh);
+        if (bLow >= kBins || bHigh >= kBins) { lra = 0.0; return; }
         lraLow = binCentre (bLow);
         lraHigh = binCentre (bHigh);
         lra = lraHigh - lraLow;
@@ -499,9 +668,8 @@ private:
     uint32_t sinceReset = 0; // sub-blocks since the integration was (re)started
     double acc[2] {};
 
-    // Histograms (0.01 LU bins, -70 to +20 LUFS).
-    std::vector<uint32_t> histCount, lraCount;
-    std::vector<double> histEnergy, lraEnergy;
+    // Gated histograms (0.01 LU bins, -70 to +20 LUFS): integrated loudness and LRA.
+    GatedHistogram histogram, lraHistogram;
 
     // Current values.
     double momentary = -200.0, shortTerm = -200.0, integrated = -200.0;
@@ -522,6 +690,10 @@ private:
     std::atomic<uint32_t> grHead { 0 };
     int grBinCount = 0;
     float grBinMin = 0.0f;
+
+    // Vectorscope feed.
+    ScopeRing scopeRing;
+    int scopePhase = 0;
 
     // Seqlock.
     std::atomic<uint32_t> seq { 0 };

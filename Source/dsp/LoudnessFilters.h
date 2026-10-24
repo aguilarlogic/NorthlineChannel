@@ -36,6 +36,38 @@ struct KWeighting
     }
 };
 
+// A K-weighting biquad in direct form I, for the meter's inner loop. Same transfer function as
+// BiquadD, but the feedback chain is one multiply and one add per sample (the feed-forward part
+// is computed off the chain), so two stages and two channels overlap well in the pipeline.
+struct DirectForm1
+{
+    double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+
+    void setup (const BiquadD& c) noexcept
+    {
+        b0 = c.b0;
+        b1 = c.b1;
+        b2 = c.b2;
+        a1 = c.a1;
+        a2 = c.a2;
+        reset();
+    }
+
+    void reset() noexcept { x1 = x2 = y1 = y2 = 0.0; }
+
+    inline double process (double x) noexcept
+    {
+        const double ff = b0 * x + b1 * x1 + b2 * x2;
+        const double y = (ff - a2 * y2) - a1 * y1;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+        return y;
+    }
+};
+
 // Loudness of a mean-square energy value (BS.1770 constant -0.691), in LUFS.
 inline double energyToLufs (double energy) noexcept { return energy > 0.0 ? -0.691 + 10.0 * std::log10 (energy) : -200.0; }
 inline double lufsToEnergy (double lufs) noexcept { return std::pow (10.0, (lufs + 0.691) * 0.1); }

@@ -176,4 +176,62 @@ private:
     float prev[2] {};
     int wi = 0, blkCount = 0;
 };
+
+// Stereo interpolator for the meter. Same kernel, same dot products and same estimate as
+// TruePeakChannel (without refinement), but the skip bound is exact: the largest |sample| of the
+// last kTaps stereo pairs, which bounds every interpolated value of both channels. A tighter
+// bound only decides when the interpolation can be skipped, so the results do not change.
+class TruePeakStereo
+{
+public:
+    static constexpr int T = TruePeakKernel::kTaps;
+
+    void reset() noexcept
+    {
+        std::fill (&hist[0][0], &hist[0][0] + 2 * 2 * T, 0.0f);
+        std::fill (std::begin (mx), std::end (mx), 0.0f);
+        wi = 0;
+    }
+
+    // Pushes one stereo pair (mono: pass the same sample twice).
+    void push (float l, float r) noexcept
+    {
+        hist[0][wi] = hist[0][wi + T] = l;
+        hist[1][wi] = hist[1][wi + T] = r;
+        const float m = std::max (std::abs (l), std::abs (r));
+        mx[wi] = mx[wi + T] = m;
+        wi = (wi + 1 == T) ? 0 : wi + 1;
+    }
+
+    // Largest magnitude over the window, both channels (inputs are finite).
+    float windowMax() const noexcept
+    {
+        const float* w = mx + wi;
+#if JUCE_USE_SSE_INTRINSICS
+        __m128 v = _mm_max_ps (_mm_loadu_ps (w), _mm_loadu_ps (w + 4));
+        v = _mm_max_ps (v, _mm_max_ps (_mm_loadu_ps (w + 8), _mm_loadu_ps (w + 12)));
+        v = _mm_max_ps (v, _mm_movehl_ps (v, v));
+        v = _mm_max_ss (v, _mm_shuffle_ps (v, v, 1));
+        return _mm_cvtss_f32 (v);
+#else
+        float m = 0.0f;
+        for (int j = 0; j < T; ++j) m = std::max (m, w[j]);
+        return m;
+#endif
+    }
+
+    // Peak magnitude of the interpolated channel `ch` at the newest slot (phase 0 is the slot itself).
+    float slotPeak (const TruePeakKernel& k, int ch) const noexcept
+    {
+        const float* w = hist[ch] + wi;
+        float best = std::abs (w[TruePeakKernel::kHalf - 1]);
+        for (int p = 1; p < k.phases; ++p) best = std::max (best, std::abs (truePeakDot (k.h[p], w)));
+        return best;
+    }
+
+private:
+    float hist[2][2 * T] {};
+    float mx[2 * T] {};
+    int wi = 0;
+};
 } // namespace nl
