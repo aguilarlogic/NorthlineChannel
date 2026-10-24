@@ -118,6 +118,10 @@ public:
     void paint (juce::Graphics&) override;
     int focusParam() const override { return binding.index(); }
     void setFocusState (bool highlighted, bool dimmed) override;
+    // An inert knob takes no clicks, drags, wheel or keys, and draws dimmed; it keeps its tooltip, which says why
+    // (the EQ Q knob for band types that ignore Q). Unlike setEnabled, hovering still works.
+    void setInert (bool shouldBeInert);
+    bool isInert() const noexcept { return inert; }
 
     void mouseEnter (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
@@ -142,6 +146,7 @@ private:
     juce::Colour accent;
     ParamBinding binding;
     bool dragging = false, hovered = false, bubbleShown = false;
+    bool inert = false;
     juce::Point<float> lastPos;
     std::unique_ptr<juce::TextEditor> editor;
 };
@@ -177,6 +182,8 @@ public:
     bool keyPressed (const juce::KeyPress&) override;
 
     ParamBinding& getBinding() noexcept { return binding; }
+    // Amber outline while a transient choice is away from its default (see Params.h, kTransient).
+    void updateTransientLook();
 
 private:
     void stepBy (int delta, bool fine);
@@ -236,6 +243,7 @@ private:
 class StereoMeter : public juce::Component, public juce::SettableTooltipClient
 {
 public:
+    static constexpr float kScaleGutter = 22.0f; // width of the dB numbers, at the left
     void setLevels (float peakL, float peakR, float rmsL, float rmsR);
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override { clip = false; holdDb[0] = holdDb[1] = -100.0f; repaint(); }

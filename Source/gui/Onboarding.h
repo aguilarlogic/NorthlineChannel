@@ -4,7 +4,7 @@
 
 namespace nl
 {
-// First-run coach: four short steps, shown over the editor until it is finished or skipped. The
+// First-run coach: four short steps, shown as an overlay card until it is finished or skipped. The
 // flag is kept in UiSettings (onboardingDone), so it appears once per user.
 class OnboardingCoach : public juce::Component
 {

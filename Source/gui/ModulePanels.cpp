@@ -1,5 +1,6 @@
 #include "ModulePanels.h"
 #include "ViewUtil.h"
+#include "Transient.h"
 
 namespace nl
 {
@@ -108,7 +109,7 @@ ParamButton::ParamButton (NorthlineProcessor& p, int paramIndex, int activeValue
     : juce::TextButton (text), proc (p), index (paramIndex), active (activeValue)
 {
     setClickingTogglesState (false);
-    setColour (juce::TextButton::buttonOnColourId, colours::pre); // amber while monitoring
+    setColour (juce::TextButton::buttonOnColourId, colours::amber); // transient: amber while on
     setTooltip (paramDef (paramIndex).name);
     attachment = std::make_unique<juce::ParameterAttachment> (*p.param (paramIndex), [this] (float v) {
         setToggleState (juce::roundToInt (v) == active, juce::dontSendNotification);
@@ -188,7 +189,7 @@ void DrawerHeader::paint (juce::Graphics& g)
         const auto textArea = r.removeFromRight (textW + 4.0f);
         g.setColour (colours::dim);
         g.drawText (text, textArea, juce::Justification::centredRight);
-        g.setColour (ok ? colours::meterGreen : colours::pre);
+        g.setColour (ok ? colours::meterGreen : colours::amber);
         g.fillEllipse (textArea.getX() - 12.0f, cy - 4.0f, 8.0f, 8.0f);
     }
 }
@@ -209,6 +210,18 @@ ModulePanel::ModulePanel (NorthlineProcessor& p, int id, int onParam, int modePa
         b->setColour (juce::TextButton::buttonOnColourId, accent);
         addAndMakeVisible (b);
     }
+    compareToggle.setButtonText ("CMP");
+    compareToggle.setTooltip ("Compare this module: hear the strip without it, loudness-matched (transient, amber while on)");
+    deltaToggle.setButtonText (juce::String::fromUTF8 ("Î"));
+    deltaToggle.setTooltip ("Delta: hear only what this module removes or adds (transient, amber while on)");
+    for (auto* b : { &compareToggle, &deltaToggle })
+    {
+        b->setClickingTogglesState (false);
+        b->setColour (juce::TextButton::buttonOnColourId, colours::amber);
+        addAndMakeVisible (b);
+    }
+    compareToggle.onClick = [this] { proc.setCompare (transient::toggleModuleCompare (proc.getCompare(), moduleId)); refreshTransient(); };
+    deltaToggle.onClick = [this] { proc.setDelta (moduleId, ! proc.getDelta (moduleId)); refreshTransient(); };
     moveLeft.setTooltip ("Move module earlier in the chain");
     moveRight.setTooltip ("Move module later in the chain");
     moveLeft.onClick = [this] { if (onMove) onMove (moduleId, -1); };
@@ -218,6 +231,12 @@ ModulePanel::ModulePanel (NorthlineProcessor& p, int id, int onParam, int modePa
 }
 
 ModulePanel::~ModulePanel() = default;
+
+void ModulePanel::refreshTransient()
+{
+    compareToggle.setToggleState (proc.getCompare() == transient::moduleCompareTarget (moduleId), juce::dontSendNotification);
+    deltaToggle.setToggleState (proc.getDelta (moduleId), juce::dontSendNotification);
+}
 
 void ModulePanel::updateBodyEnabled()
 {
@@ -286,6 +305,13 @@ int ModulePanel::chipWidth (const juce::String& text) noexcept
     return juce::jmax (44, 16 + 7 * text.length());
 }
 
+void ModulePanel::setShowCpu (bool on)
+{
+    if (on == showCpu) return;
+    showCpu = on;
+    repaint (getLocalBounds().removeFromBottom (kFooter));
+}
+
 void ModulePanel::setCpuUs (float us, float blockUs)
 {
     const auto t = us < 0.05f ? juce::String ("off - 0 us")
@@ -309,9 +335,13 @@ void ModulePanel::paint (juce::Graphics& g)
 
     for (auto& [lr, text] : labels) drawSectionLabel (g, lr, text, accent.withAlpha (on ? 1.0f : 0.5f));
 
-    g.setColour (colours::faint);
-    g.setFont (NorthlineLookAndFeel::font (10.5f));
-    g.drawText ("CPU " + cpuText, getLocalBounds().removeFromBottom (kFooter).reduced (kPad, 0), juce::Justification::centredRight);
+    if (showCpu)
+    {
+        g.setColour (colours::faint);
+        g.setFont (NorthlineLookAndFeel::font (tokens::type::label));
+        figures::draw (g, "CPU " + cpuText, getLocalBounds().removeFromBottom (kFooter).reduced (kPad, 0).toFloat(),
+                       juce::Justification::centredRight, NorthlineLookAndFeel::font (tokens::type::label));
+    }
 }
 
 void ModulePanel::resized()
@@ -320,7 +350,11 @@ void ModulePanel::resized()
     auto header = r.removeFromTop (kHeader).reduced (6, 5);
     power->setBounds (header.removeFromLeft (juce::jmax (40, 18 + 9 * juce::String (moduleName (moduleId)).length())));
     header.removeFromLeft (6);
-    if (mode) mode->setBounds (header.removeFromRight (juce::jmin (header.getWidth(), mode->getNumChildComponents() * 34)));
+    compareToggle.setBounds (header.removeFromLeft (36));
+    header.removeFromLeft (2);
+    deltaToggle.setBounds (header.removeFromLeft (26));
+    header.removeFromLeft (4);
+    if (mode) mode->setBounds (header.removeFromRight (juce::jmin (header.getWidth(), mode->getNumChildComponents() * 40)));
 
     // Chain-order buttons live in the footer, left of the CPU readout.
     auto footer = r.removeFromBottom (kFooter).reduced (6, 2);
@@ -357,7 +391,8 @@ void ModulePanel::applyPlan (juce::Rectangle<int> body, const Plan& pl)
         drawerH = kDrawerBar;
         if (drawerOpen) drawerH += kGap + drawerContentHeight (w, drawerTopW, (int) pl.drawerKnobs.size());
     }
-    const int fixed = topH + meterH + primH + secH + bottomH + drawerH;
+    // Every block carries its trailing gap, the display's included, so the display gets exactly what is left.
+    const int fixed = topH + meterH + primH + secH + bottomH + drawerH + (pl.display != nullptr ? kGap : 0);
     const int displayH = pl.display != nullptr ? juce::jmax (pl.displayMin, body.getHeight() - fixed) : 0;
 
     std::vector<juce::Component*> placed;
@@ -592,6 +627,7 @@ EqPanel::EqPanel (NorthlineProcessor& p) : ModulePanel (p, modEq, P::eqOn, P::eq
         band.q = knob (o + 4, "Q");
         band.target = choice (o + 5);
         band.target->setTooltip ("Band target in MS mode: both, mid only or side only");
+        relayoutOn (o + 1); // the band type decides whether Q does anything
     }
     display = make<EqView> (p, analyser);
     relayoutOn (P::eqMode);
@@ -616,6 +652,15 @@ void EqPanel::updateAnalyser()
 void EqPanel::layoutBody (juce::Rectangle<int> r)
 {
     const bool ms = view::plain (proc, P::eqMode) >= 0.5f;
+
+    // Shelves and the Wide / Narrow types ignore Q: dim the Q knob and say why, but keep it hoverable for the tooltip.
+    for (int b = 0; b < 4; ++b)
+    {
+        const bool usesQ = transient::eqBandUsesQ (juce::roundToInt (view::plain (proc, P::eqLowOn + b * P::kEqBandStride + 1)));
+        bands[(size_t) b].q->setInert (! usesQ);
+        bands[(size_t) b].q->setTooltip (usesQ ? "Q: how wide the band is (higher is narrower)"
+                                               : "Q has no effect with this band type: shelves and Wide or Narrow set their own width. Pick Bell or Param to use Q.");
+    }
 
     auto top = r.removeFromTop (kRowH);
     analyserOn.setBounds (top.removeFromLeft (96));
@@ -720,7 +765,7 @@ void CompPanel::layoutBody (juce::Rectangle<int> r)
     Plan pl;
     pl.top = { { type, 180.0f }, { makeup, (float) chipWidth ("AUTO GAIN") }, { autoRel, (float) chipWidth ("AUTO REL") } };
     pl.display = display;
-    pl.displayMin = 150;
+    pl.displayMin = 120;
     pl.primary = { thresh, ratio, attack, release };
     pl.secondary = { knee, range, mix, out };
     pl.drawer = true;

@@ -57,7 +57,7 @@ bool isTransientId (const juce::String& id)
 bool isMetaProperty (const juce::String& name)
 {
     return name == "order" || name == "focus" || name == "presetName" || name == "slot" || name == "uiScale"
-           || name == "activeSlot" || name == "stateVersion" || name == "version" || name == "name"
+           || name == "activeSlot" || name == "stateVersion" || name == "version" || name == "name" || name == "uiScaleSet"
            || name == "loudTarget" || name == "loudCustom" || name == "loudPause" || name == "loudResetOnPlay";
 }
 
@@ -342,6 +342,7 @@ void NorthlineProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty ("focus", focusToString (focus), nullptr);
         state.setProperty ("presetName", presetName, nullptr);
         state.setProperty ("uiScale", uiScale, nullptr);
+        state.setProperty ("uiScaleSet", uiScaleSet, nullptr);
         state.setProperty ("loudTarget", loudnessTarget, nullptr);
         state.setProperty ("loudCustom", loudnessCustomLufs, nullptr);
         state.setProperty ("loudPause", strip.meterHub().pauseIntegrationWhenStopped(), nullptr);
@@ -382,6 +383,7 @@ void NorthlineProcessor::setStateInformation (const void* data, int sizeInBytes)
         focus = focusFromString (tree.getProperty ("focus").toString());
         presetName = tree.getProperty ("presetName", "Init").toString();
         uiScale = (float) tree.getProperty ("uiScale", 1.0f);
+        uiScaleSet = (bool) tree.getProperty ("uiScaleSet", false); // sessions saved before the flag existed: not set
         loudnessTarget = (int) tree.getProperty ("loudTarget", 0);
         loudnessCustomLufs = (double) tree.getProperty ("loudCustom", -14.0);
         strip.meterHub().setPauseIntegrationWhenStopped ((bool) tree.getProperty ("loudPause", false));
@@ -723,10 +725,17 @@ float NorthlineProcessor::getUiScale() const
     return uiScale;
 }
 
-void NorthlineProcessor::setUiScale (float s)
+bool NorthlineProcessor::isUiScaleSet() const
+{
+    const juce::ScopedLock sl (stateLock);
+    return uiScaleSet;
+}
+
+void NorthlineProcessor::setUiScale (float s, bool userChoice)
 {
     const juce::ScopedLock sl (stateLock);
     uiScale = s;
+    if (userChoice) uiScaleSet = true;
 }
 
 std::pair<int, double> NorthlineProcessor::getLoudnessTarget() const

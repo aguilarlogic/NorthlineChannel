@@ -6,9 +6,17 @@
 #include "Widgets.h"
 #include <algorithm>
 #include <array>
+#include <vector>
 
 namespace nl
 {
+namespace ui
+{
+// Keeps labels apart: `tops` are the label tops in ascending order, `height` the label height. Each label
+// moves down until it clears the one above it (roadmap 8.4: labels never overlap). Pure, for the tests.
+void stackLabelTops (std::vector<float>& tops, float height);
+} // namespace ui
+
 // Scrolling level scope of one module, fed from its ScopeTap(s) on the 5 ms grid. The newest cell is on
 // the right and the window shows the last kWindowSeconds. The taps are drained by this component only.
 //   Comp   : input and output levels, threshold line (draggable: drag or wheel), GR strip.
@@ -52,7 +60,13 @@ private:
     float dbForY (float y) const noexcept;
     void paintBackground();
     void paintGrStrip (juce::Graphics& g, const History& h, juce::Colour c, juce::Rectangle<float> strip);
+    // Draws a threshold line; its label is queued and placed by flushLabels, so labels of lines that are
+    // close together stack instead of overlapping.
     void paintLines (juce::Graphics& g, float db, juce::Colour c, const juce::String& label, bool dashed);
+    void flushLabels (juce::Graphics& g);
+
+    struct PendingLabel { float y; juce::String text; juce::Colour colour; };
+    std::vector<PendingLabel> pending;
 
     NorthlineProcessor& proc;
     Kind kind;

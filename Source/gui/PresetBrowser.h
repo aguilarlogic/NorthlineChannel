@@ -6,15 +6,14 @@
 
 namespace nl
 {
-// Preset browser overlay (roadmap 8.6). A plain component: the editor shows it above everything,
-// sized to the editor's content area, and hides it when onClose fires.
+// Preset browser overlay (roadmap 8.6). The editor shows it as the content of an overlay card, which
+// supplies the title, the close button and the surface. onClose fires on Escape.
 class PresetBrowser : public juce::Component
 {
 public:
     explicit PresetBrowser (NorthlineProcessor& p);
     ~PresetBrowser() override;
 
-    void paint (juce::Graphics&) override;
     void resized() override;
     bool keyPressed (const juce::KeyPress& key) override;
 

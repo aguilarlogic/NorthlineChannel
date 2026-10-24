@@ -23,14 +23,7 @@ juce::String grText (float grDb)
 HubPanel::HubPanel()
 {
     setLookAndFeel (&lookAndFeel);
-    setOpaque (true);
-
-    heading.setText ("Instance Hub", juce::dontSendNotification);
-    heading.setFont (NorthlineLookAndFeel::font (18.0f, true));
-    heading.setColour (juce::Label::textColourId, colours::text);
-    addAndMakeVisible (heading);
-    addAndMakeVisible (closeButton);
-    closeButton.onClick = [this] { if (onClose) onClose(); };
+    setOpaque (false);
 
     scopeNote.setMultiLine (true, true);
     scopeNote.setReadOnly (true);
@@ -69,8 +62,9 @@ HubPanel::HubPanel()
     table.setColour (juce::ListBox::backgroundColourId, colours::panel);
     addAndMakeVisible (table);
 
-    // Group controls.
+    // Group controls. The group box shows a placeholder until a group exists.
     groupBox.onChange = [this] { refreshGroups(); };
+    groupBox.setTextWhenNothingSelected ("No group yet");
     addAndMakeVisible (groupBox);
     for (int i = 0; i < P::count; ++i)
     {
@@ -232,8 +226,7 @@ void HubPanel::paintCell (juce::Graphics& g, int rowNumber, int columnId, int wi
         default: break;
     }
     g.setColour (colours::text);
-    g.setFont (NorthlineLookAndFeel::font (12.0f));
-    g.drawText (text, juce::Rectangle<int> (6, 0, width - 12, height), justify, true);
+    figures::draw (g, text, juce::Rectangle<float> (6.0f, 0.0f, (float) (width - 12), (float) height), juce::Justification (justify), NorthlineLookAndFeel::font (12.0f));
 }
 
 void HubPanel::cellClicked (int rowNumber, int columnId, const juce::MouseEvent&)
@@ -244,21 +237,9 @@ void HubPanel::cellClicked (int rowNumber, int columnId, const juce::MouseEvent&
 }
 
 //==============================================================================
-void HubPanel::paint (juce::Graphics& g)
-{
-    g.fillAll (colours::panel);
-    g.setColour (colours::edge);
-    g.drawRect (getLocalBounds(), 1);
-}
-
 void HubPanel::resized()
 {
-    auto area = getLocalBounds().reduced (kPad);
-
-    auto top = area.removeFromTop (30);
-    closeButton.setBounds (top.removeFromRight (84).reduced (0, 2));
-    heading.setBounds (top);
-    area.removeFromTop (6);
+    auto area = getLocalBounds();
 
     scopeNote.setBounds (area.removeFromTop (44));
     area.removeFromTop (8);

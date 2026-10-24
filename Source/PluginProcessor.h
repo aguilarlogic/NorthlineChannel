@@ -136,8 +136,11 @@ public:
     void setFocus (std::vector<int> paramIndices);
     bool isInSpotlight (int paramIndex) const;
     void toggleSpotlight (int paramIndex);
+    // Interface size of this instance (the editor's scale). isUiScaleSet is true once the user chose a size
+    // for this instance, so a stored 100 % is kept instead of adopting the global default. Saved with the session.
     float getUiScale() const;
-    void setUiScale (float s);
+    bool isUiScaleSet() const;
+    void setUiScale (float s, bool userChoice = true);
 
     // Loudness target shown in the master column (index into loudness::kTargets, custom LUFS).
     // Saved with the session, like the MeterHub integration options.
@@ -194,6 +197,7 @@ private:
     juce::String presetName { "Init" };
     std::vector<int> focus;
     float uiScale = 1.0f;
+    bool uiScaleSet = false; // the user chose this instance's size (guarded by stateLock)
     int loudnessTarget = 0;
     double loudnessCustomLufs = -14.0;
 

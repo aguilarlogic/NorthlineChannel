@@ -89,6 +89,15 @@ void LevelScope::paintBackground()
     g.drawText ("0", juce::Rectangle<float> (plot.getX() + 2.0f, plot.getY(), 20.0f, 11.0f), juce::Justification::left);
 }
 
+namespace ui
+{
+void stackLabelTops (std::vector<float>& tops, float height)
+{
+    for (size_t i = 1; i < tops.size(); ++i)
+        tops[i] = juce::jmax (tops[i], tops[i - 1] + height);
+}
+} // namespace ui
+
 void LevelScope::paintLines (juce::Graphics& g, float db, juce::Colour c, const juce::String& label, bool dashed)
 {
     const float y = yForDb (db);
@@ -107,8 +116,24 @@ void LevelScope::paintLines (juce::Graphics& g, float db, juce::Colour c, const 
     {
         g.drawHorizontalLine ((int) y, plot.getX(), plot.getRight());
     }
+    pending.push_back ({ y, label, c });
+}
+
+void LevelScope::flushLabels (juce::Graphics& g)
+{
+    std::sort (pending.begin(), pending.end(), [] (const PendingLabel& a, const PendingLabel& b) { return a.y < b.y; });
+    std::vector<float> tops;
+    tops.reserve (pending.size());
+    for (const auto& p : pending) tops.push_back (p.y - 12.0f);
+    ui::stackLabelTops (tops, 12.0f);
+
     g.setFont (smallFont());
-    g.drawText (label, juce::Rectangle<float> (plot.getRight() - 150.0f, y - 12.0f, 148.0f, 11.0f), juce::Justification::right);
+    for (size_t i = 0; i < pending.size(); ++i)
+    {
+        g.setColour (pending[i].colour);
+        g.drawText (pending[i].text, juce::Rectangle<float> (plot.getRight() - 150.0f, tops[i], 148.0f, 11.0f), juce::Justification::right);
+    }
+    pending.clear();
 }
 
 void LevelScope::paintGrStrip (juce::Graphics& g, const History& h, juce::Colour c, juce::Rectangle<float> strip)
@@ -129,6 +154,7 @@ void LevelScope::paintGrStrip (juce::Graphics& g, const History& h, juce::Colour
 void LevelScope::paint (juce::Graphics& g)
 {
     g.drawImageAt (background, 0, 0);
+    pending.clear();
     const float alpha = isEnabled() ? 1.0f : 0.4f;
     const float cellW = plot.getWidth() / (float) (kWindowCells - 1);
     auto xFor = [&] (int j) { return plot.getX() + cellW * (float) j; };
@@ -202,6 +228,8 @@ void LevelScope::paint (juce::Graphics& g)
         paintGrStrip (g, histB, c2, gr.withTop (gr.getY() + gr.getHeight() * 0.5f).withHeight (gr.getHeight() * 0.5f));
     }
 
+    flushLabels (g);
+
     // Newest readout.
     if (histA.count > 0)
     {
@@ -211,7 +239,7 @@ void LevelScope::paint (juce::Graphics& g)
         if (kind == Kind::Comp) text = "IN " + juce::String (last.inDb, 1) + "  OUT " + juce::String (last.outDb, 1) + "  GR " + juce::String (last.grDb, 1);
         else if (kind == Kind::Gate) text = "KEY " + juce::String (last.keyDb, 1) + " dB";
         else text = "KEY " + juce::String (last.keyDb, 1) + " / " + juce::String (histB.count > 0 ? histB.ageOf (0).keyDb : -120.0f, 1) + " dB";
-        g.drawText (text, plot.reduced (6.0f, 0.0f).removeFromTop (14.0f), juce::Justification::topRight);
+        figures::draw (g, text, plot.reduced (6.0f, 0.0f).removeFromTop (14.0f), juce::Justification::topRight, smallFont());
     }
 }
 

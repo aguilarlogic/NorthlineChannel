@@ -3,6 +3,7 @@
 #include "ChainView.h"
 #include "MasterPanel.h"
 #include "ModulePanels.h"
+#include "OverlayCard.h"
 #include "SettingsOverlay.h"
 #include "TopBar.h"
 #include "UiSettings.h"
@@ -38,17 +39,21 @@ public:
 
     static constexpr int kBaseW = shell::kBaseW, kBaseH = shell::kBaseH;
 
-    // Overlay host: dims the content and shows `overlay` above it, sized to the content area.
-    // Esc or closeOverlay() removes it (deleted after the current event, so an overlay can close
-    // itself from its own callback).
-    void showOverlay (std::unique_ptr<juce::Component> overlay);
+    // Overlay host: dims the editor and shows `content` as a centred card with `title`, a close button
+    // and the given size (overlay::Size). Esc, the close button or closeOverlay() removes it (deleted
+    // after the current event, so an overlay can close itself from its own callback). `onDismiss` runs
+    // when the close button is pressed, before the card closes.
+    void showOverlay (std::unique_ptr<juce::Component> body, const juce::String& title, overlay::Size size,
+                      std::function<void()> onDismiss = {});
     void closeOverlay();
     bool hasOverlay() const noexcept { return overlay != nullptr; }
+    overlay::Size overlaySize() const noexcept { return overlaySizeValue; }
 
     void openSettings();
     void openPresetBrowser();
     void openSmartStart();
     void openHub();
+    void openOnboarding();
 
     // Window size: 75 % to 200 % of the base size, always the base aspect ratio.
     void setScale (float scale, bool storeInProcessor);
@@ -57,6 +62,10 @@ public:
     int selectedModule() const noexcept { return selected; }
     void selectModule (int moduleId);
     bool isConsoleLayout() const noexcept { return console; }
+
+    // Whether a module panel is live (its analysers and displays run). Shown panels are live; a headless
+    // editor (offline snapshot, tests) counts as shown.
+    bool isPanelActive (int moduleId) const noexcept;
 
 private:
     void timerCallback() override;
@@ -68,8 +77,8 @@ private:
     void drainMeters();
     void housekeeping();
     void settingsChanged();
-    void openOnboarding();
     void updateFocus();
+    void syncPanelActivity();
 
     NorthlineProcessor& proc;
     NorthlineLookAndFeel lnf;
@@ -86,9 +95,11 @@ private:
     juce::Component consoleBody;
     std::unique_ptr<CpuInfoPanel> cpuInfo;
 
-    juce::Component overlayLayer;  // hidden unless an overlay is open
+    OverlayDim overlayLayer;       // hidden unless an overlay is open: dims the editor
     juce::Component overlayHolder; // base-size canvas, scaled like the content
-    std::unique_ptr<juce::Component> overlay;
+    std::unique_ptr<juce::Component> overlay; // the OverlayCard
+    overlay::Size overlaySizeValue = overlay::Size::compact;
+    std::array<bool, numModules> panelLive {};
 
     std::unique_ptr<juce::VBlankAttachment> vblank;
     double lastFrameMs = 0.0;

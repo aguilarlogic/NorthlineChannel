@@ -5,7 +5,6 @@ namespace nl
 namespace
 {
 constexpr float kScales[] { 0.75f, 1.0f, 1.25f, 1.5f, 2.0f };
-constexpr int kPanelW = 560, kPanelH = 520;
 
 void styleToggle (juce::TextButton& b, bool on)
 {
@@ -19,7 +18,7 @@ SettingsOverlay::SettingsOverlay (NorthlineProcessor& p, std::function<void (flo
 {
     setWantsKeyboardFocus (true);
     setTitle ("Settings");
-    for (auto* b : { &close, &themeDark, &themeHigh, &layoutChain, &layoutConsole, &applyAll, &showCpu, &tour })
+    for (auto* b : { &themeDark, &themeHigh, &layoutChain, &layoutConsole, &applyAll, &showCpu, &tour })
         addAndMakeVisible (b);
 
     for (int i = 0; i < 5; ++i)
@@ -37,8 +36,6 @@ SettingsOverlay::SettingsOverlay (NorthlineProcessor& p, std::function<void (flo
         d->onClick = [this, s = kScales[i]] { UiSettings::get().setDefaultScale (s); refresh(); };
     }
 
-    close.setTooltip ("Close (Esc)");
-    close.onClick = [this] { if (onClose) onClose(); };
     themeDark.onClick = [this] { UiSettings::get().setTheme (tokens::Theme::dark); refresh(); };
     themeHigh.onClick = [this] { UiSettings::get().setTheme (tokens::Theme::highContrast); refresh(); };
     layoutChain.onClick = [this] { UiSettings::get().setConsoleLayout (false); refresh(); };
@@ -53,11 +50,6 @@ SettingsOverlay::SettingsOverlay (NorthlineProcessor& p, std::function<void (flo
 }
 
 SettingsOverlay::~SettingsOverlay() = default;
-
-juce::Rectangle<int> SettingsOverlay::panelBounds() const
-{
-    return juce::Rectangle<int> (kPanelW, kPanelH).withCentre (getLocalBounds().getCentre());
-}
 
 void SettingsOverlay::refresh()
 {
@@ -77,11 +69,8 @@ void SettingsOverlay::refresh()
 
 void SettingsOverlay::resized()
 {
-    auto p = panelBounds().reduced (18, 14);
-    close.setBounds (p.removeFromBottom (30).removeFromRight (120));
-
-    // Title row and sections are laid out from the top of the panel.
-    p.removeFromTop (30);
+    // The card gives the body its padding and the title row; sections are laid out from the top of the body.
+    auto p = getLocalBounds();
     auto row = [&] (int y, int h = 26) { return juce::Rectangle<int> (p.getX(), p.getY() + y, p.getWidth(), h); };
     // Two equal halves with a 6 px gap. Split in sequence: argument evaluation order is unspecified.
     auto half = [] (juce::Rectangle<int> r)
@@ -117,19 +106,7 @@ void SettingsOverlay::resized()
 
 void SettingsOverlay::paint (juce::Graphics& g)
 {
-    g.setColour (juce::Colours::black.withAlpha (0.55f));
-    g.fillAll();
-
-    const auto panel = panelBounds().toFloat();
-    g.setColour (colours::panel);
-    g.fillRoundedRectangle (panel, tokens::radius::panel + 2.0f);
-    g.setColour (colours::edge);
-    g.drawRoundedRectangle (panel.reduced (0.5f), tokens::radius::panel + 2.0f, 1.0f);
-
-    auto p = panelBounds().reduced (18, 14);
-    g.setColour (colours::text);
-    g.setFont (NorthlineLookAndFeel::font (tokens::type::title + 2.0f, true));
-    g.drawText ("Settings", p.removeFromTop (30), juce::Justification::centredLeft);
+    auto p = getLocalBounds();
 
     auto section = [&] (int y, const char* text)
     {
@@ -148,11 +125,6 @@ void SettingsOverlay::paint (juce::Graphics& g)
     g.setFont (NorthlineLookAndFeel::font (tokens::type::label));
     g.drawText ("Console shows all five modules side by side. The default size applies to new instances.",
                 juce::Rectangle<int> (p.getX(), p.getY() + 276, p.getWidth(), 26), juce::Justification::centredLeft);
-}
-
-void SettingsOverlay::mouseDown (const juce::MouseEvent& e)
-{
-    if (! panelBounds().contains (e.getPosition()) && onClose) onClose();
 }
 
 bool SettingsOverlay::keyPressed (const juce::KeyPress& key)

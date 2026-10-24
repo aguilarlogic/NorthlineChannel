@@ -431,7 +431,7 @@ void Knob::resized()
 
 void Knob::paint (juce::Graphics& g)
 {
-    const bool on = isEnabled();
+    const bool on = isEnabled() && ! inert;
     auto area = getLocalBounds();
     auto top = area.removeFromTop (14);
     auto bottom = area.removeFromBottom (14);
@@ -448,9 +448,12 @@ void Knob::paint (juce::Graphics& g)
 
     if (editor == nullptr)
     {
-        g.setFont (NorthlineLookAndFeel::font (tokens::type::value));
+        const auto text = formatValue (binding.index(), binding.plain());
+        const float natural = figures::layout (NorthlineLookAndFeel::font (tokens::type::value), text).width;
+        const float fit = juce::jlimit (0.7f, 1.0f, (float) bottom.getWidth() / juce::jmax (1.0f, natural));
+        const auto font = NorthlineLookAndFeel::font (tokens::type::value * fit);
         g.setColour (on ? colours::text : colours::faint);
-        g.drawFittedText (formatValue (binding.index(), binding.plain()), bottom, juce::Justification::centred, 1, 0.7f);
+        figures::draw (g, text, bottom.toFloat(), juce::Justification::centred, font);
     }
 }
 
@@ -458,6 +461,13 @@ void Knob::setFocusState (bool highlighted, bool dimmed)
 {
     getProperties().set ("focus", highlighted);
     setAlpha (dimmed ? 0.4f : 1.0f);
+    repaint();
+}
+
+void Knob::setInert (bool shouldBeInert)
+{
+    if (inert == shouldBeInert) return;
+    inert = shouldBeInert;
     repaint();
 }
 
@@ -485,7 +495,7 @@ void Knob::mouseExit (const juce::MouseEvent&)
 
 void Knob::mouseDown (const juce::MouseEvent& e)
 {
-    if (! isEnabled()) return;
+    if (! isEnabled() || inert) return;
     grabKeyboardFocus();
     if (e.mods.isPopupMenu())
     {
@@ -528,7 +538,7 @@ void Knob::mouseUp (const juce::MouseEvent&)
 
 void Knob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
 {
-    if (! isEnabled()) return;
+    if (! isEnabled() || inert) return;
     const float d = std::abs (w.deltaY) > std::abs (w.deltaX) ? w.deltaY : w.deltaX;
     if (std::abs (d) < 1.0e-6f) return;
     binding.wheelStep (ui::wheelDelta (d, e.mods.isShiftDown()));
@@ -537,7 +547,7 @@ void Knob::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDeta
 
 bool Knob::keyPressed (const juce::KeyPress& key)
 {
-    if (! isEnabled()) return false;
+    if (! isEnabled() || inert) return false;
     const int code = key.getKeyCode();
     const bool shift = key.getModifiers().isShiftDown();
     if (code == juce::KeyPress::returnKey)
@@ -656,19 +666,29 @@ void Chip::mouseDown (const juce::MouseEvent& e)
 
 //==============================================================================
 ChoiceBox::ChoiceBox (NorthlineProcessor& p, int paramIndex)
-    : binding (p, paramIndex, [this] { setSelectedItemIndex (juce::roundToInt (binding.plain()), juce::dontSendNotification); })
+    : binding (p, paramIndex, [this] { setSelectedItemIndex (juce::roundToInt (binding.plain()), juce::dontSendNotification); updateTransientLook(); })
 {
     const auto& d = paramDef (paramIndex);
     int id = 1;
     for (auto* c : d.choices) addItem (c, id++);
     onChange = [this] { binding.setPlainAsGesture ((float) getSelectedItemIndex()); };
     setSelectedItemIndex (juce::roundToInt (binding.plain()), juce::dontSendNotification);
+    updateTransientLook();
     setTitle (d.name);
     setDescription (ui::shortDescription (paramIndex));
     setTooltip (ui::tooltipText (paramIndex));
 }
 
 ChoiceBox::~ChoiceBox() = default;
+
+void ChoiceBox::updateTransientLook()
+{
+    // A transient choice (the monitor mode) away from its default is a live monitoring aid: its outline is amber while it is.
+    const bool away = isTransient (binding.index()) && juce::roundToInt (binding.plain()) != 0;
+    if ((bool) getProperties().getWithDefault ("transient", false) == away) return;
+    getProperties().set ("transient", away);
+    repaint();
+}
 
 void ChoiceBox::setFocusState (bool highlighted, bool dimmed)
 {
@@ -858,8 +878,8 @@ void GrBar::paint (juce::Graphics& g)
     if (showValue)
     {
         g.setColour (colours::text.withAlpha (0.85f));
-        g.setFont (NorthlineLookAndFeel::font (tokens::type::label));
-        g.drawText (value < -0.05f ? juce::String (value, 1) : juce::String ("0.0"), getLocalBounds().reduced (3, 0), juce::Justification::centredLeft);
+        figures::draw (g, value < -0.05f ? juce::String (value, 1) : juce::String ("0.0"), getLocalBounds().reduced (3, 0).toFloat(),
+                       juce::Justification::centredLeft, NorthlineLookAndFeel::font (tokens::type::label));
     }
 }
 
@@ -893,7 +913,19 @@ void StereoMeter::paint (juce::Graphics& g)
     g.fillRoundedRectangle (clipR, 1.5f);
     r.removeFromTop (2.0f);
 
+    // dB numbers in a gutter on the left, at the height of each tick.
+    auto gutter = r.removeFromLeft (kScaleGutter);
+    r.removeFromLeft (2.0f);
     auto toY = [&r] (float db) { return r.getBottom() - r.getHeight() * juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 66.0f); };
+    g.setFont (NorthlineLookAndFeel::font (tokens::type::label));
+    g.setColour (colours::dim);
+    for (float db : { 0.0f, -6.0f, -12.0f, -24.0f, -48.0f })
+    {
+        const float y = toY (db);
+        g.drawText (db == 0.0f ? juce::String ("0") : juce::String ((int) db), juce::Rectangle<float> (gutter.getX(), y - 6.0f, gutter.getWidth() - 3.0f, 12.0f),
+                    juce::Justification::centredRight, false);
+    }
+
     const float w = (r.getWidth() - 2.0f) * 0.5f;
     for (int c = 0; c < 2; ++c)
     {
@@ -908,7 +940,7 @@ void StereoMeter::paint (juce::Graphics& g)
         g.fillRect (bar.withTop (yPk));
         // dB scale ticks, drawn over the bar
         g.setColour (colours::text.withAlpha (0.35f));
-        for (float db : { -6.0f, -12.0f, -24.0f, -48.0f })
+        for (float db : { 0.0f, -6.0f, -12.0f, -24.0f, -48.0f })
             g.fillRect (juce::Rectangle<float> (bar.getX(), toY (db), bar.getWidth(), 1.0f));
         g.setColour (juce::Colours::white.withAlpha (0.55f));
         g.fillRect (bar.getX(), toY (rmsDb[c]) - 1.0f, bar.getWidth(), 2.0f);

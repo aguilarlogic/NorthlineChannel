@@ -5,10 +5,9 @@
 
 namespace nl
 {
-// Settings panel shown over the editor (the editor sizes it to its content area and scales it).
-// Theme, layout, size presets, the default size with "Apply to all instances", Show CPU, and the
-// first-run tour. Global values are written to UiSettings; the size of this instance goes through
-// onInstanceSize.
+// Settings body, shown as an overlay card (the card supplies the title and close button). Theme,
+// layout, size presets, the default size with "Apply to all instances", Show CPU, and the first-run tour.
+// Global values are written to UiSettings; the size of this instance goes through onInstanceSize.
 class SettingsOverlay : public juce::Component
 {
 public:
@@ -19,20 +18,17 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-    void mouseDown (const juce::MouseEvent&) override;
     bool keyPressed (const juce::KeyPress&) override;
 
     void refresh();   // reads the current values back into the controls
 
 private:
-    juce::Rectangle<int> panelBounds() const;
     void addSizeRow (juce::OwnedArray<juce::TextButton>& row, std::function<void (float)> onPick);
 
     NorthlineProcessor& proc;
     std::function<void (float)> instanceSize;
     std::function<void()> replayTour;
 
-    juce::TextButton close { "Close" };
     juce::TextButton themeDark { "Dark" }, themeHigh { "High contrast" };
     juce::TextButton layoutChain { "Chain and detail" }, layoutConsole { "Console (all five)" };
     juce::OwnedArray<juce::TextButton> sizeInstance, sizeDefault;

@@ -7,7 +7,6 @@ namespace nl
 namespace
 {
 const float kScales[] { 0.75f, 1.0f, 1.25f, 1.5f, 2.0f };
-const juce::String kUndo = juce::String::fromUTF8 ("\xe2\x86\xb6"), kRedo = juce::String::fromUTF8 ("\xe2\x86\xb7");
 const juce::String kSmart = juce::String::fromUTF8 ("\xe2\x9c\xa6 "), kSpot = juce::String::fromUTF8 ("\xe2\x97\x89 ");
 const juce::String kGear = juce::String::fromUTF8 ("\xe2\x9a\x99");
 
@@ -87,23 +86,82 @@ private:
 };
 
 //==============================================================================
-TopBar::TopBar (NorthlineProcessor& p) : proc (p)
+juce::String scalePercentText (float scale)
+{
+    return juce::String (juce::roundToInt (scale * 100.0f)) + "%";
+}
+
+ArrowButton::ArrowButton (bool redo) : juce::Button (redo ? "Redo" : "Undo"), mirrored (redo)
+{
+    setTooltip (redo ? "Redo (Ctrl+Shift+Z or Ctrl+Y)" : "Undo (Ctrl+Z)");
+}
+
+void ArrowButton::paintButton (juce::Graphics& g, bool over, bool down)
+{
+    getLookAndFeel().drawButtonBackground (g, *this, colours::track, over, down);
+
+    // Design box 22 x 22: a head pointing left, and a shaft that turns down on the right. Redo mirrors it.
+    juce::Path head, shaft;
+    head.addTriangle (2.5f, 9.0f, 8.5f, 4.0f, 8.5f, 14.0f);
+    shaft.startNewSubPath (7.0f, 9.0f);
+    shaft.cubicTo (12.5f, 9.0f, 17.5f, 11.0f, 17.5f, 17.0f);
+
+    const auto r = getLocalBounds().toFloat();
+    const float k = juce::jmin (r.getWidth(), r.getHeight()) / 22.0f;
+    const auto t = juce::AffineTransform::scale (k).translated (r.getCentreX() - 11.0f * k, r.getCentreY() - 11.0f * k);
+    if (mirrored) { head.applyTransform (juce::AffineTransform::scale (-1.0f, 1.0f, 11.0f, 0.0f)); shaft.applyTransform (juce::AffineTransform::scale (-1.0f, 1.0f, 11.0f, 0.0f)); }
+    head.applyTransform (t);
+    shaft.applyTransform (t);
+
+    g.setColour (isEnabled() ? colours::text : colours::faint);
+    g.fillPath (head);
+    g.strokePath (shaft, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+CompareButton::CompareButton (NorthlineProcessor& p) : juce::TextButton ("COMPARE"), proc (p)
+{
+    setClickingTogglesState (false);
+    setColour (juce::TextButton::buttonOnColourId, colours::amber);
+    setTooltip ("Compare: hold to hear the strip without its processing, loudness-matched. Shift-click to latch it on.");
+}
+
+void CompareButton::mouseDown (const juce::MouseEvent& e)
+{
+    juce::TextButton::mouseDown (e);
+    proc.setCompare (hold.press (e.mods.isShiftDown()));
+    refresh();
+}
+
+void CompareButton::mouseUp (const juce::MouseEvent& e)
+{
+    juce::TextButton::mouseUp (e);
+    proc.setCompare (hold.release());
+    refresh();
+}
+
+void CompareButton::refresh()
+{
+    setToggleState (proc.getCompare() != nl::transient::kCompareOff, juce::dontSendNotification);
+}
+
+TopBar::TopBar (NorthlineProcessor& p) : proc (p), compareButton (p)
 {
     quality = std::make_unique<Segmented> (p, P::quality, colours::eq);
     addAndMakeVisible (*quality);
 
-    for (auto* b : { &prevButton, &nextButton, &presetButton, &saveButton, &slotA, &slotB, &copyAB, &undoButton, &redoButton, &historyButton,
-                     &smartStartButton, &spotlightButton, &editSpotlightButton, &hubButton, &settingsButton })
+    for (auto* b : std::initializer_list<juce::Component*> { &prevButton, &nextButton, &presetButton, &saveButton, &slotA, &slotB, &copyAB,
+                                                             &undoButton, &redoButton, &historyButton, &smartStartButton, &spotlightButton,
+                                                             &editSpotlightButton, &hubButton, &settingsButton })
     {
         b->setColour (juce::TextButton::buttonOnColourId, colours::eq);
         addAndMakeVisible (b);
     }
+    addAndMakeVisible (compareButton);
+    shownScale = proc.getUiScale();
     addAndMakeVisible (scale);
-    for (int i = 0; i < 5; ++i) scale.addItem (juce::String (juce::roundToInt (kScales[i] * 100)) + "%", i + 1);
+    for (int i = 0; i < 5; ++i) scale.addItem (scalePercentText (kScales[i]), i + 1);
     scale.setTooltip ("Interface size");
 
-    undoButton.setButtonText (kUndo);
-    redoButton.setButtonText (kRedo);
     smartStartButton.setButtonText (kSmart + "Smart Start");
     spotlightButton.setButtonText (kSpot + "Spotlight");
     settingsButton.setButtonText (kGear);
@@ -127,7 +185,7 @@ TopBar::TopBar (NorthlineProcessor& p) : proc (p)
     spotlightButton.setClickingTogglesState (true);
     spotlightButton.setColour (juce::TextButton::buttonOnColourId, colours::focus.darker (0.3f));
     editSpotlightButton.setClickingTogglesState (true);
-    editSpotlightButton.setColour (juce::TextButton::buttonOnColourId, colours::focus);
+    editSpotlightButton.setColour (juce::TextButton::buttonOnColourId, colours::amber); // an edit mode: transient, amber
 
     prevButton.onClick = [this] { stepPreset (-1); };
     nextButton.onClick = [this] { stepPreset (+1); };
@@ -157,6 +215,11 @@ TopBar::~TopBar()
     editLayer.reset();
 }
 
+void TopBar::refreshTransient()
+{
+    compareButton.refresh();
+}
+
 void TopBar::refresh()
 {
     presetButton.setButtonText (proc.getPresetName().isEmpty() ? juce::String ("Init") : proc.getPresetName());
@@ -166,8 +229,20 @@ void TopBar::refresh()
     undoButton.setEnabled (proc.canUndo());
     redoButton.setEnabled (proc.canRedo());
     historyButton.setEnabled (proc.canUndo() || proc.canRedo());
+    // A size on the list selects its entry; any other size (the window was resized freely) shows its percentage.
+    const float current = shownScale;
+    int preset = -1;
     for (int i = 0; i < 5; ++i)
-        if (std::abs (kScales[i] - proc.getUiScale()) < 0.01f) scale.setSelectedItemIndex (i, juce::dontSendNotification);
+        if (std::abs (kScales[i] - current) < 0.01f) preset = i;
+    if (preset >= 0)
+    {
+        if (scale.getSelectedItemIndex() != preset) scale.setSelectedItemIndex (preset, juce::dontSendNotification);
+    }
+    else if (scale.getText() != scalePercentText (current))
+    {
+        scale.setSelectedId (0, juce::dontSendNotification);
+        scale.setText (scalePercentText (current), juce::dontSendNotification);
+    }
 
     const auto latency = "Lat " + juce::String (proc.getStrip().getLatencySamples()) + " smp";
     if (latency != latencyText)
@@ -254,9 +329,9 @@ void TopBar::paint (juce::Graphics& g)
     g.drawText ("CHANNEL", r.removeFromLeft (100), juce::Justification::topLeft);
 
     g.setColour (colours::dim);
-    g.setFont (NorthlineLookAndFeel::font (12.0f));
-    g.drawText (latencyText, latencyBounds, juce::Justification::centredRight);
-    g.drawText (cpuText, cpuBounds, juce::Justification::centredRight);
+    const auto readoutFont = NorthlineLookAndFeel::font (12.0f);
+    figures::draw (g, latencyText, latencyBounds.toFloat(), juce::Justification::centredRight, readoutFont);
+    figures::draw (g, cpuText, cpuBounds.toFloat(), juce::Justification::centredRight, readoutFont);
 }
 
 void TopBar::resized()
@@ -270,28 +345,29 @@ void TopBar::resized()
         r.removeFromLeft (gapAfter);
     };
     place (prevButton, 22, 2);
-    place (presetButton, 150, 2);
+    place (presetButton, 120, 2);
     place (nextButton, 22, 10);
-    place (saveButton, 52, 10);
-    place (slotA, 26, 2);
-    place (slotB, 26, 2);
-    place (copyAB, 40, 10);
-    place (undoButton, 30, 2);
-    place (redoButton, 30, 2);
-    place (historyButton, 50, 10);
-    place (smartStartButton, 96, 10);
+    place (saveButton, 46, 10);
+    place (slotA, 24, 2);
+    place (slotB, 24, 2);
+    place (copyAB, 36, 10);
+    place (undoButton, 28, 2);
+    place (redoButton, 28, 2);
+    place (historyButton, 46, 10);
+    place (smartStartButton, 92, 10);
     place (spotlightButton, 88, 2);
-    place (editSpotlightButton, 100, 10);
-    place (*quality, 88, 0);
+    place (editSpotlightButton, 94, 10);
+    place (compareButton, 74, 10);
+    place (*quality, 84, 0);
 
-    scale.setBounds (r.removeFromRight (56));
+    scale.setBounds (r.removeFromRight (52));
     r.removeFromRight (8);
-    settingsButton.setBounds (r.removeFromRight (34));
+    settingsButton.setBounds (r.removeFromRight (30));
     r.removeFromRight (4);
-    hubButton.setBounds (r.removeFromRight (44));
+    hubButton.setBounds (r.removeFromRight (40));
     r.removeFromRight (10);
-    cpuBounds = r.removeFromRight (70);
-    latencyBounds = r.removeFromRight (84);
+    cpuBounds = r.removeFromRight (62);
+    latencyBounds = r.removeFromRight (74);
     if (editLayer != nullptr) setEditLayerVisible (true);
 }
 
