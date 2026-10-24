@@ -69,8 +69,9 @@ Quality selects the processing path for the saturation and the limiter.
 
 HQ costs more CPU. See [Troubleshooting](15-troubleshooting.md#cpu-use-is-high).
 
-Quality is non-automatable. Changing it resets the delay lines, so it is not click-free, and it
-changes the reported latency. Set it before you start the mix, not during playback.
+Quality is non-automatable. Changing it changes the reported latency, so the output dips for about
+30 ms while the new quality is applied in silence. The switch does not click, but set it before you
+start the mix rather than during a pass.
 
 ## Latency and CPU readouts
 

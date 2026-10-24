@@ -24,10 +24,11 @@ The Hub shows instances in its own plug-in process only. Hosts that run plug-ins
 (plug-in sandboxing, bridged 32-bit and 64-bit plug-ins) keep the other instances out of view. Check
 whether your host does this. The Hub states the limit when it opens.
 
-## Clicks when I change quality
+## The audio drops out briefly when I change quality
 
-Switching Eco and HQ is not click-free. It changes the latency by 48 samples, and the delay lines
-reset. Switch quality when the audio is silent, and do not switch it during a mix pass.
+This is expected. Switching Eco and HQ changes the latency by 48 samples, so the output fades out,
+the new quality is applied in silence, and the output fades back in, about 30 ms in all. Set the
+quality before a mix pass.
 
 ## The limiter lets peaks above the ceiling through
 
@@ -77,11 +78,6 @@ sets it. See [EQ, dynamic bands](07-eq.md#dynamic-bands-host-only).
 Smart Start has no information about the rest of the mix. Its result is a starting point. Undo it
 (Ctrl+Z), and adjust the controls it changed. Those controls are highlighted in Spotlight. Try a
 longer, cleaner capture of the source. Smart Start listens for 12 seconds.
-
-## The listen buttons look pink, not amber
-
-The tooltips say amber, but this build lights the listen buttons in the PRE accent colour. The listen
-still works. See [Compare and Delta](10-compare-and-delta.md#listen-buttons).
 
 ## My presets are missing
 

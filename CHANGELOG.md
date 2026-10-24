@@ -59,6 +59,15 @@ means the change was found but no named acceptance test was. **Partial** means p
 - Settings: dark and high-contrast themes, interface size from 75 % to 200 %, a default size for new instances,
   a CPU overlay, and a four-step first-run tour.
 - Accessibility roles on knobs, chain cards, segmented controls and the gain-reduction bar.
+- Compare and Delta controls. COMPARE in the top bar compares the whole strip while it is held, and Shift-click
+  latches it. Each module header has CMP (compare that module) and Δ (hear only what it adds or removes).
+- Overlays (presets, Smart Start, Instance Hub, settings, tour) open as cards over a dimmed editor. Tables,
+  scroll bars, text fields, menus and combo boxes use the theme.
+- Amber marks every transient state: listens, Delta, Compare, Edit Spotlight, the Smart Start listen, the key
+  LED, and the monitor selector when it is not on Stereo.
+- The stereo meters have a dB scale, and readouts use tabular figures.
+- Inter is embedded when `Resources/fonts/Inter-Regular.ttf` and `Inter-Bold.ttf` are present at configure
+  time. Without them the system font is used.
 
 **Release and development**
 
@@ -67,7 +76,11 @@ means the change was found but no named acceptance test was. **Partial** means p
 - A release workflow, installer scripts for Windows (Inno Setup) and a macOS package script (pkgbuild), and
   signing scripts. The macOS build is universal.
 - A CLAP build, enabled when the `external/clap-juce-extensions` checkout is present.
-- 185 tests and five measurement suites (`pre`, `dynamics`, `eq`, `master` and `engine`), plus a benchmark and a
+- `NorthlineTool validate`: pluginval-style checks (editor, sample rates × block sizes × layouts, fuzzing,
+  silence, state, latency, bypass, Compare, threads and audio-thread allocations), in process or on a built
+  VST3 through JUCE hosting. CI runs it, and runs pluginval when it is available.
+- An AddressSanitizer build of the test tool (`-DNL_ASAN=ON`).
+- 206 tests and five measurement suites (`pre`, `dynamics`, `eq`, `master` and `engine`), plus a benchmark and a
   snapshot command.
 
 ### Changed
@@ -85,6 +98,12 @@ means the change was found but no named acceptance test was. **Partial** means p
 - Gate and de-esser: the expander law is continuous across the threshold (D14).
 - The strip runs its smoothers on absolute 32-sample control ticks, so the output does not depend on the host
   block size (D3).
+- Switching between Eco and HQ is click-free: the output dips for 10 ms with a raised-cosine ramp, the new
+  quality and its latency are applied in silence, and the output comes back over 10 ms.
+- Whole-strip Compare is loudness-matched without Level Match. The strip learns the level of its output
+  against the bypass path while Compare is off and holds it while Compare is on.
+- The EQ Q knob is dimmed, with a tooltip, on band types that ignore Q.
+- The scopes skip their work when no view reads them.
 - Source layout: DSP in `Source/dsp`, the editor in `Source/gui`, Smart Start in `Source/smart`, and the Instance
   Hub in `Source/hub`.
 
@@ -113,8 +132,8 @@ Audit defects from `docs/ROADMAP.md` section 6:
 - **D9 Compressor timing (fixed).** The hidden FET and OPT scaling is removed. The dynamics report measures attack
   against the knob to the ±10 % spec.
 - **D10 Discrete switches (fixed in code).** Type and target changes cross-fade through a shadow instance over 15 ms.
-- **D11 Monitor and listens (partial).** Monitor and listens are transient, and the duplicate Mid mode is removed.
-  The monitor's mid and side gain is still 0.5, and the engine uses 0.707 (see Known issues).
+- **D11 Monitor and listens (fixed).** Monitor and listens are transient, and the duplicate Mid mode is removed.
+  The monitor keeps a gain of 0.5 for Mono and Side on purpose (see Known issues).
 - **D12 De-esser output smoothing (fixed).** Covered by the D3 change.
 - **D13 EQ display (fixed).** The display uses the session sample rate, and it draws Mid and Side curves separately
   in M/S mode.
@@ -125,6 +144,16 @@ Audit defects from `docs/ROADMAP.md` section 6:
   checked against `v0.9.0-audit`.
 
 Other fixes:
+
+- A host bypass is delayed by the reported latency, so it stays aligned with the processed signal
+  (`processBlockBypassed`).
+- Switching module Compare straight from one module to another no longer clicks (a 0.05 step when moving to
+  COMP). The learned level glides instead of jumping.
+- Out-of-bounds reads found by AddressSanitizer: the scope peak search and two test helpers.
+- Closing an analyser view waits for its thread to stop, which removes a possible use-after-free.
+- The PRE harmonics display rounds its values, and its labels no longer overlap. The module header shows the Δ
+  glyph instead of a missing-character box.
+- The preset round-trip test uses its own folder per process, so parallel test runs no longer collide.
 
 - The HQ Safety Clip ceiling is guarded after the decimator.
 - The compressor RMS detector ripple is removed, and the auto make-up gain is re-calibrated.
@@ -139,18 +168,14 @@ These are open in this beta. Several are also listed in the manual's troubleshoo
 - Some parameters have no editor control, so the host must set them: input swap, global mix, Weight Track HP,
   the gate, de-esser and compressor lookaheads, the de-esser attack, the de-esser band mode (Split or Wide), EQ band
   solo, the EQ dynamic band settings, and the compressor stereo link.
-- The Q knob has no effect on shelf, Wide and Narrow bands. It works on Bell and Param bands.
-- Whole-strip Compare does not loudness-match its two states. Module Compare does. Merge commit `67ac4d4` describes
-  Compare as loudness-matched, so the commit message and the code disagree.
-- Whole-strip Compare and Delta (PRE, GATE and EQ) run in the engine, but the editor has no controls for them.
-- The listen buttons light up in the PRE accent colour (pink). Their tooltips say amber.
 - Clicking a row in the Instance Hub brings that instance's editor window forward. It does not edit the instance in place.
 - Safety Clip and Brickwall do not hold a true-peak ceiling. With a −1 dB ceiling on band-limited drums, the master
   report measures 1.89 dBTP for Safety Clip HQ and 1.75 dBTP for Brickwall. Use True Peak when the true-peak
   ceiling matters.
-- Switching between Eco and HQ is not click-free, and it changes the reported latency.
+- Switching between Eco and HQ changes the reported latency. The output dips for about 30 ms while it does.
 - PRE at HQ with every control on uses about 2.5 % CPU in the PRE report.
-- The monitor's mid and side gain (0.5) differs from the engine's (0.707) (D11).
+- The monitor's Mono and Side use a gain of 0.5, so a centred source keeps its level when you switch from
+  Stereo to Mono. The engine's internal mid/side matrix uses 0.707 (power-preserving). This is deliberate (D11).
 - No test seeds the sample counter near 2³¹ (D8).
 - Screen reader behaviour has not been recorded.
 - `docs/measurements/engine.md` predates the PRE HQ latency and the determinism fix. Regenerate it before you use its figures.

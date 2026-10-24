@@ -84,8 +84,8 @@ in Eco and 1.5 % for HQ, for the whole strip. PRE alone is at the Eco budget and
 
 ## Limits
 
-- **Quality switching is not click-free.** Switching Eco and HQ changes the latency by 48 samples,
-  and the delay lines reset. Switch quality when the audio is silent.
+- **Quality switching dips the output.** Switching Eco and HQ changes the latency by 48 samples. The
+  output fades out for 10 ms, the new quality is applied in silence, and the output fades back in.
 - **Tape's high-frequency loss depends on level.** At 100 % drive the 10 kHz level moves by about
   3 dB between −40 and −12 dBFS. At 0 % drive, quiet signals sit up to 0.25 dB above flat at 10 kHz.
   Tape is not flat for this reason.

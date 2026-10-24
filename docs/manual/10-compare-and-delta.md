@@ -1,8 +1,28 @@
 # 10. Compare and Delta
 
-Two tools in the editor let you check what the processing does: the A/B slots, and the listen
-buttons on the DE-ESS and COMP modules. Use the listens to hear what a module removes. Use A/B to
-switch between two full settings.
+Four tools in the editor let you check what the processing does: Compare, Delta, the listen buttons,
+and the A/B slots. Use Compare to hear the strip, or one module, out of the chain at the same
+loudness. Use Delta and the listens to hear what a module adds or removes. Use A/B to switch between
+two full settings.
+
+## Compare
+
+Compare is a loudness-matched bypass. A louder signal sounds better, so Compare plays the bypassed
+signal at the level of the processed one, and you hear only the difference in tone and dynamics.
+
+- **Whole strip.** Hold **COMPARE** in the top bar to hear the input instead of the processed output.
+  Release it to go back. Shift-click COMPARE to latch it on, and click it again to release it.
+  The strip learns the level of its output against its input while Compare is off, and holds that
+  level while Compare is on. Level Match does not need to be on.
+- **One module.** Click **CMP** in a module header to take that module out of the chain. The rest
+  of the chain keeps running, and the module's learned level is added back. Click CMP on another
+  module to move Compare there, or click it again to turn it off.
+- Compare fades in and out over 20 ms, and it does not change the latency.
+
+## Delta
+
+Click **Δ** in a module header to hear only what that module adds or removes: its output minus its
+input, aligned for latency. On DE-ESS and COMP, Δ turns on the module's DELTA listen.
 
 ## A and B: setting slots
 
@@ -38,22 +58,10 @@ change the sound.
   listen.
 - The listen buttons are transient. They are not saved in presets, slots or undo. They turn off when
   a preset or session loads.
-- The tooltips say "amber while on". In this build an active listen lights up in the PRE accent
-  colour (pink in the default theme), on every module.
-
-## What the engine supports without an editor control
-
-The engine supports the following. The editor has no button for them in this build, so you cannot
-reach them from the screen:
-
-- **Whole-strip Compare.** Bypasses the whole chain and plays the input, aligned for latency, while
-  the output gain stays the same.
-- **Module Compare.** Bypasses one module and plays it at the level it had when it was on, learned
-  from the signal.
-- **Delta for PRE, GATE and EQ.** Plays what each of those modules adds or removes.
-
-These paths run in the audio engine and are covered by the tests in `tools/tests/TestSmart.cpp`.
-They are not in the editor.
+- Compare, Δ and the listen buttons light up amber while they are on, like every other transient
+  state.
+- Compare and Δ are transient too: they are not saved, and they turn off when a preset or session
+  loads.
 
 ## Tips
 
