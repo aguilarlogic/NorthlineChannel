@@ -10,6 +10,7 @@
 #include "MasterSection.h"
 #include "Meters.h"
 #include "PreModule.h"
+#include "ScopeTap.h"
 #include <array>
 #include <atomic>
 
@@ -66,6 +67,25 @@ public:
     MeterHub& meterHub() noexcept { return master.meters(); }
     double getSampleRate() const noexcept { return fs; }
     int getNumChannels() const noexcept { return channels; }
+
+    //==============================================================================
+    // Scope taps for the module displays: one per module slot, plus DE-ESS band 2 (its own GR and
+    // key level). Consumer side: one UI component per tap.
+    ScopeTap& scope (int moduleId) noexcept { return scopes[(size_t) moduleId]; }
+    ScopeTap& deEsserBand2Scope() noexcept { return dsBand2Scope; }
+
+    // Analyser taps: the mono signal (Mid, or the average of L and R in stereo) entering and leaving
+    // the EQ slot, and leaving the PRE slot. Written only while an analyser is attached. Each tap has
+    // one consumer thread (the analyser that owns it).
+    enum class AnalyserTap : int { eqIn = 0, eqOut, preOut, count };
+    void analyserStart() noexcept { analyserUsers.fetch_add (1); }
+    void analyserStop() noexcept { analyserUsers.fetch_sub (1); }
+    size_t popAnalyser (AnalyserTap tap, float* out, size_t maxCount) noexcept;
+
+    // Published once per block with relaxed atomics, for the UI.
+    float getEqDynGainDb (int band) const noexcept { return eqDynLive[(size_t) band].load (std::memory_order_relaxed); }
+    // Peak level of the external sidechain input in dBFS (-120 when no sidechain is connected).
+    float getSidechainDb() const noexcept { return scLive.load (std::memory_order_relaxed); }
 
     //==============================================================================
     // Level Match (D1). Message-thread API; the processor mirrors a learned trim into match_trim.
@@ -196,5 +216,17 @@ private:
     ModuleLearn learn[numModules];
     float learnAlpha = 0.0f;
     std::array<std::atomic<float>, 6> hubGr {};  // read by the Instance Hub
+
+    // Views (see the public accessors above).
+    void scopeSlot (int id, const float* const* in, const float* const* out, int numCh, int n, bool silent) noexcept;
+    void tapMono (AnalyserTap tap, const float* const* io, int numCh, int n, bool ms) noexcept;
+    std::array<ScopeTap, numModules> scopes;
+    ScopeTap dsBand2Scope;
+    std::array<SpscRing<float>, (size_t) AnalyserTap::count> analyserRings;
+    std::array<uint32_t, (size_t) AnalyserTap::count> seenAnalyserGeneration {};
+    std::atomic<int> analyserUsers { 0 };
+    std::vector<float> scopeIn[2], analyserScratch;
+    std::array<std::atomic<float>, 4> eqDynLive {};
+    std::atomic<float> scLive { -120.0f };
 };
 } // namespace nl
