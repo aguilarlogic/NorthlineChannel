@@ -89,6 +89,51 @@ void migrateValuesV1 (std::map<juce::String, float>& v)
 } // namespace
 
 //==============================================================================
+namespace
+{
+juce::String typesetNumber (const juce::String& text)
+{
+    // U+2212 minus before digits, so labels read as typeset ("-18" becomes a true minus).
+    juce::String out;
+    for (int i = 0; i < text.length(); ++i)
+    {
+        const auto c = text[i];
+        if (c == '-' && i + 1 < text.length() && juce::CharacterFunctions::isDigit (text[i + 1]))
+            out += juce::String::fromUTF8 ("\xe2\x88\x92");
+        else
+            out += juce::String::charToString (c);
+    }
+    return out;
+}
+} // namespace
+
+juce::String undoLabelForParam (int index, float oldPlain, float newPlain)
+{
+    const auto& d = paramDef (index);
+    juce::String name = d.name;
+    if (const int mod = NorthlineProcessor::moduleOfParam (index); mod >= 0)
+    {
+        const juce::String prefix = moduleName (mod);
+        if (! name.startsWithIgnoreCase (prefix)) name = prefix + " " + name;
+    }
+
+    const juce::String arrow = juce::String::fromUTF8 ("\xe2\x86\x92");
+    const auto a = formatValue (index, oldPlain), b = formatValue (index, newPlain);
+    if (d.kind != ParamDef::Float)
+        return name + ": " + typesetNumber (a) + " " + arrow + " " + typesetNumber (b);
+
+    // Write the unit once when both values share it: "Comp Threshold -18 -> -22 dB".
+    juce::String oldText = a;
+    for (auto unit : { " dB", " kHz", " Hz", " ms", " s", " %", " : 1" })
+        if (a.endsWith (unit) && b.endsWith (unit))
+        {
+            oldText = a.dropLastCharacters ((int) std::strlen (unit));
+            break;
+        }
+    return name + " " + typesetNumber (oldText) + " " + arrow + " " + typesetNumber (b);
+}
+
+//==============================================================================
 void NorthlineProcessor::migrateSnapshotV1 (juce::ValueTree& snapshot)
 {
     std::map<juce::String, float> before;
@@ -150,7 +195,7 @@ NorthlineProcessor::NorthlineProcessor()
     }
     slots[0] = makeSnapshot();
     slots[1] = slots[0].createCopy();
-    pushUndoSnapshot();
+    pushUndoSnapshot ("Start");
     startTimerHz (10);
 }
 
@@ -316,20 +361,21 @@ void NorthlineProcessor::setStateInformation (const void* data, int sizeInBytes)
     {
         const juce::ScopedLock sl (stateLock);
         undoStack.clear();
+        undoLabels.clear();
         undoPos = -1;
     }
-    pushUndoSnapshot();
+    pushUndoSnapshot ("Load session");
     ++stateGeneration;
     if (juce::roundToInt (params[(size_t) P::matchMode]->convertFrom0to1 (params[(size_t) P::matchMode]->getValue())) == 1)
         strip.holdLevelMatch(); // a restored Learn trim is kept, not learned again
 }
 
 //==============================================================================
-void NorthlineProcessor::setOrder (const ChannelStrip::Order& order, bool recordUndo)
+void NorthlineProcessor::setOrder (const ChannelStrip::Order& order, bool recordUndo, const juce::String& undoLabel)
 {
     strip.setOrder (order);
     ++stateGeneration;
-    if (recordUndo) pushUndoSnapshot();
+    if (recordUndo) pushUndoSnapshot (undoLabel.isEmpty() ? juce::String ("Reorder modules") : undoLabel);
 }
 
 void NorthlineProcessor::moveModule (int moduleId, int delta)
@@ -341,7 +387,7 @@ void NorthlineProcessor::moveModule (int moduleId, int delta)
         const int j = i + delta;
         if (j < 0 || j >= numModules) return;
         std::swap (o[(size_t) i], o[(size_t) j]);
-        setOrder (o);
+        setOrder (o, true, juce::String ("Move ") + moduleName (moduleId) + (delta < 0 ? " earlier" : " later"));
         return;
     }
 }
@@ -419,14 +465,20 @@ void NorthlineProcessor::writeParameter (int index, float plain)
 }
 
 //==============================================================================
-void NorthlineProcessor::pushUndoSnapshot()
+void NorthlineProcessor::pushUndoSnapshot (const juce::String& label)
 {
     auto snapshot = makeSnapshot();
     const juce::ScopedLock sl (stateLock);
     if (undoPos >= 0 && undoPos < (int) undoStack.size() && undoStack[(size_t) undoPos].isEquivalentTo (snapshot)) return;
     undoStack.resize ((size_t) (undoPos + 1));
+    undoLabels.resize ((size_t) (undoPos + 1));
     undoStack.push_back (snapshot);
-    while (undoStack.size() > 33) undoStack.erase (undoStack.begin()); // 32 undo levels
+    undoLabels.push_back (label.isEmpty() ? juce::String ("Change") : label);
+    while (undoStack.size() > 33) // 32 undo levels
+    {
+        undoStack.erase (undoStack.begin());
+        undoLabels.erase (undoLabels.begin());
+    }
     undoPos = (int) undoStack.size() - 1;
 }
 
@@ -466,12 +518,66 @@ void NorthlineProcessor::redo()
     applySnapshot (target);
 }
 
-void NorthlineProcessor::parameterGestureChanged (int, bool gestureIsStarting)
+std::vector<juce::String> NorthlineProcessor::getUndoHistory() const
 {
-    if (! gestureIsStarting && applyingDepth.load() == 0) triggerAsyncUpdate();
+    const juce::ScopedLock sl (stateLock);
+    return std::vector<juce::String> (undoLabels.begin(), undoLabels.begin() + juce::jmax (0, undoPos + 1));
 }
 
-void NorthlineProcessor::handleAsyncUpdate() { pushUndoSnapshot(); }
+std::vector<juce::String> NorthlineProcessor::getRedoHistory() const
+{
+    const juce::ScopedLock sl (stateLock);
+    return std::vector<juce::String> (undoLabels.begin() + juce::jmax (0, undoPos + 1), undoLabels.end());
+}
+
+void NorthlineProcessor::undoTo (int timelineIndex)
+{
+    juce::ValueTree target;
+    {
+        const juce::ScopedLock sl (stateLock);
+        if (timelineIndex < 0 || timelineIndex >= (int) undoStack.size() || timelineIndex == undoPos) return;
+        undoPos = timelineIndex;
+        target = undoStack[(size_t) undoPos].createCopy();
+    }
+    applySnapshot (target);
+}
+
+void NorthlineProcessor::parameterGestureChanged (int juceIndex, bool gestureIsStarting)
+{
+    if (applyingDepth.load() > 0) return; // a snapshot is being applied: not a user gesture
+    int index = -1;
+    for (int i = 0; i < P::count && index < 0; ++i)
+        if (params[(size_t) i] != nullptr && params[(size_t) i]->getParameterIndex() == juceIndex) index = i;
+    if (index < 0) return;
+
+    if (gestureIsStarting)
+    {
+        gestureParam = index;
+        gestureStartPlain = params[(size_t) index]->convertFrom0to1 (params[(size_t) index]->getValue());
+        return;
+    }
+
+    juce::String label;
+    if (gestureParam == index)
+        label = undoLabelForParam (index, gestureStartPlain, params[(size_t) index]->convertFrom0to1 (params[(size_t) index]->getValue()));
+    gestureParam = -1;
+    {
+        const juce::ScopedLock sl (stateLock);
+        pendingUndoLabel = label;
+    }
+    triggerAsyncUpdate();
+}
+
+void NorthlineProcessor::handleAsyncUpdate()
+{
+    juce::String label;
+    {
+        const juce::ScopedLock sl (stateLock);
+        label = pendingUndoLabel;
+        pendingUndoLabel.clear();
+    }
+    pushUndoSnapshot (label);
+}
 
 void NorthlineProcessor::timerCallback() { servicePendingWork(); }
 
@@ -513,7 +619,7 @@ void NorthlineProcessor::selectSlot (int slot)
         target = slots[slot].createCopy();
     }
     applySnapshot (target);
-    pushUndoSnapshot();
+    pushUndoSnapshot (juce::String ("Show setting ") + (slot == 0 ? "A" : "B"));
 }
 
 void NorthlineProcessor::copyActiveToOther()
@@ -591,7 +697,7 @@ void NorthlineProcessor::resetToDefaults()
     }
     applyValues ({});
     resetTransientParams();
-    pushUndoSnapshot();
+    pushUndoSnapshot ("Reset all settings");
 }
 
 void NorthlineProcessor::loadFactoryPreset (int index)
@@ -609,10 +715,10 @@ void NorthlineProcessor::loadFactoryPreset (int index)
     s.setProperty ("presetName", fp.name, nullptr);
     applySnapshot (s);
     resetTransientParams();
-    pushUndoSnapshot();
+    pushUndoSnapshot (juce::String ("Load preset: ") + fp.name);
 }
 
-bool NorthlineProcessor::saveUserPreset (const juce::File& file, const juce::String& name)
+bool NorthlineProcessor::saveUserPreset (const juce::File& file, const juce::String& name, const PresetMeta& meta)
 {
     {
         const juce::ScopedLock sl (stateLock);
@@ -621,6 +727,9 @@ bool NorthlineProcessor::saveUserPreset (const juce::File& file, const juce::Str
     juce::ValueTree root ("NorthlinePreset");
     root.setProperty ("version", kStateVersion, nullptr);
     root.setProperty ("name", name, nullptr);
+    root.setProperty ("category", meta.category, nullptr);
+    root.setProperty ("tags", meta.tags.joinIntoString (", "), nullptr);
+    root.setProperty ("note", meta.note, nullptr);
     root.appendChild (makeSnapshot(), nullptr);
     file.getParentDirectory().createDirectory();
     if (auto xml = root.createXml()) return xml->writeTo (file);
@@ -636,10 +745,104 @@ bool NorthlineProcessor::loadUserPreset (const juce::File& file)
     if (! snap.isValid()) return false;
     snap = snap.createCopy();
     if ((int) root.getProperty ("version", 1) < 2) migrateSnapshotV1 (snap);
-    snap.setProperty ("presetName", root.getProperty ("name", file.getFileNameWithoutExtension()), nullptr);
+    const juce::String name = root.getProperty ("name", file.getFileNameWithoutExtension()).toString();
+    snap.setProperty ("presetName", name, nullptr);
     applySnapshot (snap);
     resetTransientParams();
-    pushUndoSnapshot();
+    pushUndoSnapshot ("Load preset: " + name);
+    return true;
+}
+//==============================================================================
+// Module presets.
+int NorthlineProcessor::moduleOfParam (int i)
+{
+    if (i >= P::preOn && i <= P::weightTrack) return modPre;
+    if (i >= P::gateOn && i <= P::gateLookahead) return modGate;
+    if (i >= P::dsOn && i <= P::ds2Range) return modDs;
+    if (i >= P::eqOn && i <= P::eqHighDynExt) return modEq;
+    if (i >= P::compOn && i <= P::compLookahead) return modComp;
+    return -1;
+}
+
+juce::String NorthlineProcessor::getModuleXml (int moduleId, const juce::String& name) const
+{
+    juce::ValueTree m ("NorthlineModule");
+    m.setProperty ("version", kStateVersion, nullptr);
+    m.setProperty ("module", moduleId, nullptr);
+    m.setProperty ("name", name, nullptr);
+    for (int i = 0; i < P::count; ++i)
+    {
+        if (moduleOfParam (i) != moduleId || isTransient (i)) continue;
+        auto* p = params[(size_t) i];
+        m.setProperty (paramID (i), (double) p->convertFrom0to1 (p->getValue()), nullptr);
+    }
+    auto xml = m.createXml();
+    return xml != nullptr ? xml->toString() : juce::String();
+}
+
+bool NorthlineProcessor::saveModulePreset (const juce::File& file, int moduleId, const juce::String& name)
+{
+    if (moduleId < 0 || moduleId >= numModules) return false;
+    file.getParentDirectory().createDirectory();
+    return file.replaceWithText (getModuleXml (moduleId, name));
+}
+
+namespace
+{
+// Reads a module preset. Only parameters of that module that are not transient are taken.
+bool readModuleXml (const juce::XmlElement& xml, int& moduleId, juce::String& name, std::vector<std::pair<int, float>>& values)
+{
+    if (! xml.hasTagName ("NorthlineModule")) return false;
+    moduleId = xml.getIntAttribute ("module", -1);
+    if (moduleId < 0 || moduleId >= numModules) return false;
+    name = xml.getStringAttribute ("name");
+    for (int i = 0; i < P::count; ++i)
+    {
+        if (NorthlineProcessor::moduleOfParam (i) != moduleId || isTransient (i)) continue;
+        const auto id = paramID (i);
+        if (xml.hasAttribute (id)) values.emplace_back (i, (float) xml.getDoubleAttribute (id));
+    }
+    return true;
+}
+} // namespace
+
+void NorthlineProcessor::applyParamsAsOneStep (const std::vector<std::pair<int, float>>& values, const juce::String& label)
+{
+    ++applyingDepth;
+    for (auto& [index, plain] : values)
+    {
+        auto* p = params[(size_t) index];
+        const float norm = p->convertTo0to1 (plain);
+        if (std::abs (norm - p->getValue()) > 1.0e-6f)
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (norm);
+            p->endChangeGesture();
+        }
+    }
+    --applyingDepth;
+    pushUndoSnapshot (label);
+}
+
+bool NorthlineProcessor::loadModulePreset (const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse (file);
+    int moduleId = -1;
+    juce::String name;
+    std::vector<std::pair<int, float>> values;
+    if (xml == nullptr || ! readModuleXml (*xml, moduleId, name, values)) return false;
+    applyParamsAsOneStep (values, juce::String (moduleName (moduleId)) + " preset: " + (name.isEmpty() ? file.getFileNameWithoutExtension() : name));
+    return true;
+}
+
+bool NorthlineProcessor::pasteModuleXml (const juce::String& text)
+{
+    auto xml = juce::XmlDocument::parse (text);
+    int moduleId = -1;
+    juce::String name;
+    std::vector<std::pair<int, float>> values;
+    if (xml == nullptr || ! readModuleXml (*xml, moduleId, name, values)) return false;
+    applyParamsAsOneStep (values, juce::String ("Paste ") + moduleName (moduleId) + " module");
     return true;
 }
 } // namespace nl

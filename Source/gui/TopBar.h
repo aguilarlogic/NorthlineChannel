@@ -36,6 +36,7 @@ private:
     void showSaveMenu();
     void showHistoryMenu();
     void stepPreset (int delta);
+    void saveCurrentPreset();
     void saveUserPresetAs();
     void copyModule (int moduleId);
     void pasteModule();
@@ -46,14 +47,14 @@ private:
     NorthlineProcessor& proc;
     juce::TextButton prevButton { "<" }, nextButton { ">" }, presetButton, saveButton { "Save" };
     juce::TextButton slotA { "A" }, slotB { "B" }, copyAB { "A>B" };
-    juce::TextButton undoButton { "Undo" }, redoButton { "Redo" }, historyButton { "History" }, resetButton { "Reset" };
+    juce::TextButton undoButton { "Undo" }, redoButton { "Redo" }, historyButton { "History" };
     juce::TextButton smartStartButton { "Smart Start" }, spotlightButton { "Spotlight" }, editSpotlightButton { "Edit Spotlight" };
     juce::TextButton hubButton { "Hub" }, settingsButton { "Settings" };
     juce::ComboBox scale;
     std::unique_ptr<Segmented> quality;
-    juce::String cpuText { "CPU --" }, latencyText { "0 smp" };
+    juce::String cpuText { "CPU --" }, latencyText { "Lat 0 smp" };
+    juce::Rectangle<int> latencyBounds, cpuBounds;
     std::unique_ptr<SpotlightEditLayer> editLayer;
-    juce::String lastPresetName;
     std::unique_ptr<juce::FileChooser> chooser;
 };
 } // namespace nl

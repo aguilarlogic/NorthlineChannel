@@ -1,130 +1,271 @@
 #include "Presets.h"
+#include <algorithm>
+#include <map>
 
 namespace nl
 {
+namespace
+{
+const char* const kStartingPoints = "Starting points";
+const char* const kCharacter = "Character";
+
+int indexForParamId (const juce::String& id)
+{
+    static const std::map<juce::String, int> table = [] { std::map<juce::String, int> m; for (int i = 0; i < P::count; ++i) m[paramID (i)] = i; return m; }();
+    const auto it = table.find (id);
+    return it == table.end() ? -1 : it->second;
+}
+
+juce::StringArray trimmedTokens (const char* text, const char* separators)
+{
+    juce::StringArray out;
+    for (auto token : juce::StringArray::fromTokens (text, separators, ""))
+        if (token.trim().isNotEmpty()) out.add (token.trim());
+    return out;
+}
+
+// "id=value" pairs. Returns false for a malformed pair or an unknown id.
+bool parsePair (const juce::String& token, int& index, float& value)
+{
+    const int eq = token.indexOf ("=");
+    if (eq <= 0) return false;
+    index = indexForParamId (token.substring (0, eq));
+    if (index < 0) return false;
+    const auto text = token.substring (eq + 1);
+    if (! text.containsOnly ("-+.0123456789eE")) return false;
+    value = text.getFloatValue();
+    return true;
+}
+
+void parseValues (const char* text, std::vector<PresetValue>& out)
+{
+    for (auto token : juce::StringArray::fromTokens (text, " ", ""))
+    {
+        int index = -1;
+        float value = 0.0f;
+        if (parsePair (token, index, value)) out.push_back ({ index, value });
+    }
+}
+
+} // namespace
+
+//==============================================================================
 const std::vector<FactoryPreset>& factoryPresets()
 {
-    using namespace P;
-    static const std::vector<FactoryPreset> presets {
-        { "", "Init", {}, {} },
-
-        { "Vocals", "Vocal - Upfront",
-          { { hpOn, 1 }, { hpFreq, 90 }, { hpSlope, 2 },
-            { satOn, 1 }, { satType, 1 }, { satDrive, 25 },
-            { dsOn, 1 }, { ds1Type, 3 }, { ds1Freq, 6500 }, { ds1Thresh, -18 }, { ds1Range, 8 },
-            { eqMidType, 0 }, { eqMidFreq, 320 }, { eqMidGain, -2 }, { eqToneType, 2 }, { eqToneFreq, 3000 }, { eqToneGain, 1.5f }, { eqToneQ, 1.2f },
-            { eqHighType, 0 }, { eqHighFreq, 11000 }, { eqHighGain, 3 },
-            { compOn, 1 }, { compType, 2 }, { compThresh, -26 }, { compRatio, 3 }, { compAttack, 10 }, { compRelease, 300 }, { compMakeup, 1 } },
-          { hpFreq, ds1Thresh, eqHighGain, compThresh, satDrive } },
-
-        { "Vocals", "Vocal - Smooth Opto",
-          { { hpOn, 1 }, { hpFreq, 80 },
-            { dsOn, 1 }, { ds1Type, 3 }, { ds1Freq, 7000 }, { ds1Thresh, -20 }, { ds1Range, 6 },
-            { eqLowType, 0 }, { eqLowFreq, 180 }, { eqLowGain, -1.5f }, { eqHighType, 1 }, { eqHighFreq, 12000 }, { eqHighGain, 2 },
-            { compOn, 1 }, { compType, 2 }, { compThresh, -30 }, { compRatio, 4 }, { compAttack, 15 }, { compRelease, 600 }, { compMakeup, 1 } },
-          { compThresh, compRelease, eqHighGain, ds1Thresh } },
-
-        { "Vocals", "Vocal - Rap Presence",
-          { { hpOn, 1 }, { hpFreq, 110 }, { hpSlope, 2 },
-            { satOn, 1 }, { satType, 0 }, { satDrive, 35 },
-            { dsOn, 1 }, { ds1Type, 1 }, { ds1Freq, 5500 }, { ds1Thresh, -16 }, { ds1Range, 10 },
-            { eqToneType, 0 }, { eqToneFreq, 2200 }, { eqToneGain, 3 }, { eqHighType, 0 }, { eqHighFreq, 9000 }, { eqHighGain, 2 },
-            { compOn, 1 }, { compType, 1 }, { compThresh, -22 }, { compRatio, 6 }, { compAttack, 3 }, { compRelease, 90 }, { compMix, 80 }, { compMakeup, 1 } },
-          { compThresh, compMix, eqToneGain, ds1Thresh } },
-
-        { "Drums", "Kick - Punch",
-          { { gateOn, 1 }, { gateThresh, -32 }, { gateFloor, -24 }, { gateRelease, 120 }, { gateHold, 40 },
-            { weightOn, 1 }, { weightAmt, 0 },
-            { eqLowType, 2 }, { eqLowFreq, 60 }, { eqLowGain, 3 }, { eqLowQ, 1.2f },
-            { eqMidType, 1 }, { eqMidFreq, 360 }, { eqMidGain, -4 },
-            { eqToneType, 2 }, { eqToneFreq, 3500 }, { eqToneGain, 3 }, { eqToneQ, 1.5f },
-            { compOn, 1 }, { compType, 1 }, { compThresh, -16 }, { compRatio, 4 }, { compAttack, 12 }, { compRelease, 80 }, { compMix, 70 } },
-          { gateThresh, eqLowGain, eqMidGain, compMix } },
-
-        { "Drums", "Snare - Crack",
-          { { gateOn, 1 }, { gateThresh, -28 }, { gateFloor, -18 }, { gateRelease, 180 },
-            { satOn, 1 }, { satType, 2 }, { satDrive, 30 },
-            { eqLowType, 2 }, { eqLowFreq, 200 }, { eqLowGain, 2 }, { eqLowQ, 1.0f },
-            { eqToneType, 0 }, { eqToneFreq, 5000 }, { eqToneGain, 3 },
-            { compOn, 1 }, { compType, 0 }, { compThresh, -20 }, { compRatio, 4 }, { compAttack, 6 }, { compRelease, 70 } },
-          { gateThresh, satDrive, eqToneGain, compThresh } },
-
-        { "Drums", "Drum Bus - Glue",
-          { { satOn, 1 }, { satType, 1 }, { satDrive, 30 },
-            { eqHighType, 0 }, { eqHighFreq, 10000 }, { eqHighGain, 1.5f },
-            { compOn, 1 }, { compType, 0 }, { compThresh, -14 }, { compRatio, 2 }, { compAttack, 30 }, { compRelease, 150 }, { compMix, 60 }, { compMakeup, 1 } },
-          { compThresh, compMix, satDrive } },
-
-        { "Drums", "Overheads - Wide M/S",
-          { { hpOn, 1 }, { hpFreq, 120 },
-            { eqMode, 1 },
-            { eqMidType, 0 }, { eqMidFreq, 300 }, { eqMidGain, 2 }, { eqMidTarget, 1 },
-            { eqHighType, 0 }, { eqHighFreq, 9000 }, { eqHighGain, 3 }, { eqHighTarget, 2 },
-            { compOn, 1 }, { compMode, 1 }, { compType, 3 }, { compThresh, -20 }, { compRatio, 2 }, { compAttack, 20 }, { compRelease, 200 } },
-          { eqMidGain, eqHighGain, hpFreq } },
-
-        { "Drums", "Room - Crush",
-          { { satOn, 1 }, { satType, 3 }, { satDrive, 55 },
-            { lpOn, 1 }, { lpFreq, 7000 },
-            { compOn, 1 }, { compType, 1 }, { compThresh, -30 }, { compRatio, kRatioInf }, { compAttack, 0.5f }, { compRelease, 50 }, { compMix, 40 } },
-          { satDrive, compMix, lpFreq } },
-
-        { "Bass", "Bass - Solid",
-          { { hpOn, 1 }, { hpFreq, 32 }, { hpSlope, 3 }, { lpOn, 1 }, { lpFreq, 9000 },
-            { satOn, 1 }, { satType, 0 }, { satDrive, 40 },
-            { eqLowType, 0 }, { eqLowFreq, 80 }, { eqLowGain, 2 }, { eqMidType, 0 }, { eqMidFreq, 250 }, { eqMidGain, -3 },
-            { compOn, 1 }, { compType, 2 }, { compThresh, -22 }, { compRatio, 4 }, { compAttack, 20 }, { compRelease, 200 }, { compMakeup, 1 } },
-          { satDrive, eqLowGain, compThresh } },
-
-        { "Bass", "Bass DI - Grit",
-          { { hpOn, 1 }, { hpFreq, 35 }, { hpSlope, 3 },
-            { satOn, 1 }, { satType, 2 }, { satDrive, 45 },
-            { eqToneType, 2 }, { eqToneFreq, 900 }, { eqToneGain, 2.5f }, { eqToneQ, 1.0f },
-            { compOn, 1 }, { compType, 1 }, { compThresh, -20 }, { compRatio, 4 }, { compAttack, 5 }, { compRelease, 120 } },
-          { satDrive, eqToneGain, compThresh } },
-
-        { "Guitars", "Acoustic - Air",
-          { { hpOn, 1 }, { hpFreq, 100 },
-            { eqMidType, 0 }, { eqMidFreq, 250 }, { eqMidGain, -3 }, { eqHighType, 1 }, { eqHighFreq, 12000 }, { eqHighGain, 3 },
-            { compOn, 1 }, { compType, 3 }, { compThresh, -24 }, { compRatio, 2.5f }, { compAttack, 15 }, { compRelease, 200 } },
-          { eqMidGain, eqHighGain, compThresh } },
-
-        { "Guitars", "Electric - Focus",
-          { { hpOn, 1 }, { hpFreq, 90 }, { lpOn, 1 }, { lpFreq, 9000 },
-            { eqMidType, 2 }, { eqMidFreq, 1500 }, { eqMidGain, 2 }, { eqMidQ, 1.2f },
-            { eqToneType, 1 }, { eqToneFreq, 3500 }, { eqToneGain, -2 },
-            { compOn, 1 }, { compType, 1 }, { compThresh, -18 }, { compRatio, 3 }, { compAttack, 15 }, { compRelease, 120 } },
-          { hpFreq, lpFreq, eqMidGain } },
-
-        { "Keys", "Piano - Clear",
-          { { hpOn, 1 }, { hpFreq, 40 },
-            { eqMidType, 0 }, { eqMidFreq, 300 }, { eqMidGain, -2 }, { eqHighType, 0 }, { eqHighFreq, 8000 }, { eqHighGain, 2 },
-            { compOn, 1 }, { compType, 3 }, { compThresh, -22 }, { compRatio, 2 }, { compAttack, 25 }, { compRelease, 250 } },
-          { eqMidGain, eqHighGain } },
-
-        { "Buses", "Mix Bus - Gentle",
-          { { eqHighType, 0 }, { eqHighFreq, 12000 }, { eqHighGain, 1 },
-            { compOn, 1 }, { compType, 3 }, { compThresh, -16 }, { compRatio, 1.5f }, { compAttack, 30 }, { compRelease, 300 }, { compMakeup, 1 },
-            { limOn, 1 }, { limCeiling, -0.3f } },
-          { compThresh, limCeiling } },
-
-        { "Spoken", "Podcast - Voice",
-          { { hpOn, 1 }, { hpFreq, 80 }, { hpSlope, 2 },
-            { gateOn, 1 }, { gateType, 1 }, { gateThresh, -45 }, { gateFloor, -15 }, { gateRatio, 2 },
-            { dsOn, 1 }, { ds1Type, 3 }, { ds1Freq, 6000 }, { ds1Thresh, -20 }, { ds1Range, 8 },
-            { eqMidType, 0 }, { eqMidFreq, 300 }, { eqMidGain, -2 }, { eqToneType, 0 }, { eqToneFreq, 3000 }, { eqToneGain, 2 },
-            { compOn, 1 }, { compType, 0 }, { compThresh, -24 }, { compRatio, 3 }, { compAttack, 8 }, { compRelease, 150 }, { compMakeup, 1 },
-            { limOn, 1 }, { limCeiling, -1 } },
-          { gateThresh, compThresh, ds1Thresh } },
-    };
+    static const std::vector<FactoryPreset> presets = [] {
+        std::vector<FactoryPreset> out;
+        for (const auto* part : { &factoryDefsPartOne(), &factoryDefsPartTwo() })
+            for (const auto& def : *part)
+            {
+                jassert (validateFactoryDef (def).isEmpty());
+                FactoryPreset fp;
+                fp.category = def.category;
+                fp.name = def.name;
+                fp.family = def.family;
+                fp.note = def.note;
+                for (auto tag : trimmedTokens (def.tags, ",")) fp.tags.add (tag);
+                parseValues (def.values, fp.values);
+                for (auto id : trimmedTokens (def.spotlight, " "))
+                    if (const int i = indexForParamId (id); i >= 0) fp.focus.push_back (i);
+                out.push_back (std::move (fp));
+            }
+        return out;
+    }();
     return presets;
 }
 
+juce::String validateFactoryDef (const FactoryDef& def)
+{
+    const juce::String name = def.name;
+    if (juce::String (def.category).isEmpty()) return name + ": no category";
+    if (juce::String (def.family) != kStartingPoints && juce::String (def.family) != kCharacter) return name + ": unknown family";
+    if (juce::String (def.note).trim().isEmpty()) return name + ": no note";
+
+    for (auto token : juce::StringArray::fromTokens (def.values, " ", ""))
+    {
+        if (token.trim().isEmpty()) continue;
+        int index = -1;
+        float value = 0.0f;
+        if (! parsePair (token, index, value)) return name + ": bad or unknown pair '" + token + "'";
+        const auto& d = paramDef (index);
+        if (d.flags & kTransient) return name + ": transient parameter " + paramID (index);
+        if (value < d.minV - 1.0e-4f || value > d.maxV + 1.0e-4f) return name + ": " + paramID (index) + " out of range";
+        if (d.kind == ParamDef::Bool && value != 0.0f && value != 1.0f) return name + ": " + paramID (index) + " must be 0 or 1";
+        if (d.kind == ParamDef::Choice && std::abs (value - std::round (value)) > 1.0e-4f) return name + ": " + paramID (index) + " must be a choice index";
+    }
+
+    const auto spot = trimmedTokens (def.spotlight, " ");
+    if (spot.size() < 3 || spot.size() > 6) return name + ": Spotlight needs 3 to 6 controls";
+    for (const auto& id : spot)
+    {
+        const int i = indexForParamId (id);
+        if (i < 0) return name + ": unknown Spotlight control " + id;
+        if (paramDef (i).flags & kTransient) return name + ": transient Spotlight control " + id;
+    }
+    return {};
+}
+
+//==============================================================================
+bool readUserPresetMeta (const juce::File& file, juce::String& name, PresetMeta& meta)
+{
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || ! xml->hasTagName ("NorthlinePreset")) return false;
+    name = xml->getStringAttribute ("name", file.getFileNameWithoutExtension());
+    meta.category = xml->getStringAttribute ("category");
+    meta.tags.clear();
+    for (auto tag : trimmedTokens (xml->getStringAttribute ("tags").toRawUTF8(), ",")) meta.tags.add (tag);
+    meta.note = xml->getStringAttribute ("note");
+    return true;
+}
+
+std::vector<PresetEntry> scanUserPresets (const juce::File& root)
+{
+    std::vector<PresetEntry> out;
+    if (! root.isDirectory()) return out;
+    auto files = root.findChildFiles (juce::File::findFiles, true, "*.nlpreset");
+    files.sort();
+    for (const auto& file : files)
+    {
+        PresetMeta meta;
+        juce::String name;
+        if (! readUserPresetMeta (file, name, meta)) continue;
+        const juce::String rel = file.getRelativePathFrom (root).replaceCharacter ('\\', '/');
+        const int slash = rel.lastIndexOfChar ('/');
+
+        PresetEntry e;
+        e.isFactory = false;
+        e.file = file;
+        e.folder = slash < 0 ? juce::String() : rel.substring (0, slash);
+        e.name = name;
+        e.category = meta.category;
+        e.tags = meta.tags;
+        e.note = meta.note;
+        e.key = "user:" + rel;
+        out.push_back (e);
+    }
+    return out;
+}
+
+std::vector<PresetEntry> presetLibrary (const juce::File& userRoot)
+{
+    std::vector<PresetEntry> out;
+    const auto& list = factoryPresets();
+    for (int i = 0; i < (int) list.size(); ++i)
+    {
+        const auto& fp = list[(size_t) i];
+        PresetEntry e;
+        e.isFactory = true;
+        e.factoryIndex = i;
+        e.name = fp.name;
+        e.category = fp.category;
+        e.family = fp.family;
+        e.note = fp.note;
+        e.tags = fp.tags;
+        e.key = "factory:" + fp.name;
+        out.push_back (e);
+    }
+    for (auto& e : scanUserPresets (userRoot)) out.push_back (e);
+    return out;
+}
+
+std::vector<juce::String> userPresetFolders (const juce::File& root)
+{
+    std::vector<juce::String> out;
+    if (! root.isDirectory()) return out;
+    for (const auto& dir : root.findChildFiles (juce::File::findDirectories, true))
+        out.push_back (dir.getRelativePathFrom (root).replaceCharacter ('\\', '/'));
+    std::sort (out.begin(), out.end());
+    return out;
+}
+
+//==============================================================================
+std::vector<int> queryPresets (const std::vector<PresetEntry>& entries, const PresetQuery& q)
+{
+    const auto words = trimmedTokens (q.text.toLowerCase().toRawUTF8(), " ");
+    std::vector<int> out;
+    for (int i = 0; i < (int) entries.size(); ++i)
+    {
+        const auto& e = entries[(size_t) i];
+        if (q.favouritesOnly && ! e.favourite) continue;
+        if (q.category.isNotEmpty() && e.category != q.category) continue;
+        if (q.family.isNotEmpty() && e.family != q.family) continue;
+        if (q.folder != "*" && (e.isFactory || e.folder != q.folder)) continue;
+
+        if (words.size() > 0)
+        {
+            const juce::String haystack = (e.name + " " + e.category + " " + e.family + " " + e.tags.joinIntoString (" ") + " " + e.note).toLowerCase();
+            bool all = true;
+            for (const auto& w : words) all = all && haystack.contains (w.toLowerCase());
+            if (! all) continue;
+        }
+        out.push_back (i);
+    }
+
+    switch (q.sort)
+    {
+        case PresetQuery::Sort::Name:
+            std::stable_sort (out.begin(), out.end(), [&] (int a, int b) { return entries[(size_t) a].name.compareIgnoreCase (entries[(size_t) b].name) < 0; });
+            break;
+        case PresetQuery::Sort::Category:
+            std::stable_sort (out.begin(), out.end(), [&] (int a, int b)
+            {
+                const auto& ea = entries[(size_t) a];
+                const auto& eb = entries[(size_t) b];
+                const int c = ea.category.compareIgnoreCase (eb.category);
+                return c != 0 ? c < 0 : ea.name.compareIgnoreCase (eb.name) < 0;
+            });
+            break;
+        case PresetQuery::Sort::Favourites:
+            std::stable_sort (out.begin(), out.end(), [&] (int a, int b) { return entries[(size_t) a].favourite && ! entries[(size_t) b].favourite; });
+            break;
+        case PresetQuery::Sort::Library:
+        default:
+            break;
+    }
+    return out;
+}
+
+//==============================================================================
 juce::File userPresetFolder()
 {
     return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
         .getChildFile ("Northline Audio")
         .getChildFile ("Northline Channel")
         .getChildFile ("Presets");
+}
+
+juce::File moduleFolder()
+{
+    return userPresetFolder().getSiblingFile ("Modules");
+}
+
+juce::File appDataFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("Northline Audio")
+        .getChildFile ("Northline Channel");
+}
+
+juce::File favouritesFile()
+{
+    return appDataFolder().getChildFile ("favourites.xml");
+}
+
+std::set<juce::String> loadFavourites (const juce::File& file)
+{
+    std::set<juce::String> keys;
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || ! xml->hasTagName ("Favourites")) return keys;
+    forEachXmlChildElementWithTagName (*xml, item, "Item")
+        keys.insert (item->getStringAttribute ("key"));
+    return keys;
+}
+
+bool saveFavourites (const juce::File& file, const std::set<juce::String>& keys)
+{
+    juce::XmlElement root ("Favourites");
+    for (const auto& key : keys) root.createNewChildElement ("Item")->setAttribute ("key", key);
+    file.getParentDirectory().createDirectory();
+    return root.writeTo (file);
 }
 } // namespace nl

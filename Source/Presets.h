@@ -101,7 +101,7 @@ std::vector<int> queryPresets (const std::vector<PresetEntry>& entries, const Pr
 juce::File userPresetFolder();       // Documents\Northline Audio\Northline Channel\Presets
 juce::File appDataFolder();          // AppData\Roaming\Northline Audio\Northline Channel
 juce::File favouritesFile();         // appDataFolder() \ favourites.xml
-juce::File moduleFolder();           // userPresetFolder() \ Modules (module presets, *.nlmodule)
+juce::File moduleFolder();           // Northline Channel \ Modules (module presets, *.nlmodule)
 
 std::set<juce::String> loadFavourites (const juce::File& file);
 bool saveFavourites (const juce::File& file, const std::set<juce::String>& keys);

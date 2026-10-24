@@ -77,6 +77,8 @@ public:
     std::vector<juce::String> getUndoHistory() const;
     std::vector<juce::String> getRedoHistory() const;
     void undoTo (int timelineIndex);
+    // Pushes the label of a finished gesture now instead of at the next message loop turn (tests, offline tools).
+    void flushPendingUndo() { handleAsyncUpdate(); }
 
     // Module presets: one module's parameters, never transient ones. Module ids are ModuleId.
     // Module presets travel as XML: files (*.nlmodule) and the clipboard.
@@ -134,7 +136,6 @@ private:
     void timerCallback() override;
     void applyValues (const std::vector<std::pair<int, float>>& values);
     void applyParamsAsOneStep (const std::vector<std::pair<int, float>>& values, const juce::String& label);
-    void noteGesture (int juceParamIndex, bool starting);
     void resetTransientParams();
     void afterWholeStateLoad();
     void writeParameter (int index, float plain);
