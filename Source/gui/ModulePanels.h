@@ -5,6 +5,7 @@
 #include "PreView.h"
 #include "Scopes.h"
 #include "Widgets.h"
+#include <algorithm>
 #include <functional>
 
 namespace nl
@@ -27,7 +28,7 @@ private:
 
 // The collapsible "Sidechain" heading of a module, with the key status on the right when EXT is on:
 // green while a key signal was seen in the last 2 s, amber with "no key signal" after that.
-class DrawerHeader : public juce::Component, private juce::Timer
+class DrawerHeader : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
 {
 public:
     DrawerHeader (NorthlineProcessor& p, int extParam, std::function<void()> onToggle);
@@ -61,6 +62,8 @@ public:
     void parentHierarchyChanged() override { showingChanged(); }
 
     int getModuleId() const noexcept { return moduleId; }
+    // Shows or hides the Sidechain drawer (re-lays the panel out).
+    void setDrawerOpen (bool open) { drawerOpen = open; resized(); }
     virtual int preferredWidth() const = 0;
     virtual void updateMeters (const MeterFrame&) {}
     void setCpuUs (float us, float blockUs);
@@ -219,9 +222,8 @@ private:
 
     Segmented* type;
     GrBar gr { colours::comp, 24.0f };
-    LevelScope* scope = nullptr;
-    CompCurve* curveInset = nullptr;
-    Knob *thresh, *ratio, *attack, *release, *knee, *range, *link, *mix, *out, *scHp, *scLp, *scFreq, *scGain;
+    juce::Component* display = nullptr; // scope with the static curve inset
+    Knob *thresh, *ratio, *attack, *release, *knee, *range, *mix, *out, *scHp, *scLp, *scFreq, *scGain;
     Chip *makeup, *autoRel, *ext;
     ParamButton *listenKey, *listenDelta;
 };

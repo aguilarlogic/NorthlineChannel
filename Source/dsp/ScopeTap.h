@@ -67,8 +67,9 @@ public:
         }
     }
 
-    // UI thread. Copies up to maxCount points, oldest first. After a prepare() it discards the ring
-    // and returns 0 once.
+    // UI thread. Copies up to maxCount points, oldest first. The first call after a prepare() discards
+    // everything in the ring (points from before the prepare and up to one UI interval after it) and
+    // returns 0.
     size_t pop (ScopePoint* out, size_t maxCount) noexcept
     {
         if (maxCount == 0) return 0;

@@ -1,11 +1,196 @@
 #include "ModulePanels.h"
-#include "../dsp/EqModule.h"
+#include "ViewUtil.h"
 
 namespace nl
 {
 namespace
 {
-constexpr int kHeader = 32, kFooter = 18, kPad = 8, kKnobH = 64, kRowH = 22, kGap = 6;
+constexpr int kHeader = 32, kFooter = 18, kPad = 8, kGap = 6;
+constexpr int kRowH = 22;       // chips, choice boxes, flow rows
+constexpr int kRowGap = 4;      // between and inside flow rows
+constexpr int kMeterH = 14;     // GR bars
+constexpr int kDrawerBar = 18;  // Sidechain heading
+// Knob cells: the Knob draws its label in 13 px above and below the dial.
+constexpr int kPrimaryDial = 60, kPrimaryCell = kPrimaryDial + 26, kPrimaryMinW = kPrimaryDial + 8;
+constexpr int kSecondaryDial = 38, kSecondaryCell = kSecondaryDial + 26, kSecondaryMinW = kSecondaryDial + 6;
+constexpr double kMaxFlowStretch = 2.5; // a flow item grows to at most this multiple of its minimum width
+
+// Flow rows: items keep their minimum width and wrap when a row is full.
+std::vector<std::vector<int>> flowRows (int width, const std::vector<float>& minW)
+{
+    std::vector<std::vector<int>> rows;
+    std::vector<int> cur;
+    float used = 0.0f;
+    for (int i = 0; i < (int) minW.size(); ++i)
+    {
+        float need = minW[(size_t) i] + (cur.empty() ? 0.0f : (float) kRowGap);
+        if (! cur.empty() && used + need > (float) width)
+        {
+            rows.push_back (cur);
+            cur.clear();
+            used = 0.0f;
+            need = minW[(size_t) i];
+        }
+        cur.push_back (i);
+        used += need;
+    }
+    if (! cur.empty()) rows.push_back (cur);
+    return rows;
+}
+
+int flowHeight (int width, const std::vector<float>& minW)
+{
+    const int rows = (int) flowRows (width, minW).size();
+    return rows == 0 ? 0 : rows * kRowH + (rows - 1) * kRowGap;
+}
+
+void placeFlow (juce::Rectangle<int> area, const std::vector<juce::Component*>& comps, const std::vector<float>& minW)
+{
+    for (const auto& row : flowRows (area.getWidth(), minW))
+    {
+        auto line = area.removeFromTop (kRowH);
+        area.removeFromTop (kRowGap);
+        float sum = 0.0f;
+        for (int i : row) sum += minW[(size_t) i];
+        const float avail = (float) (line.getWidth() - kRowGap * ((int) row.size() - 1));
+        const double scale = juce::jmin (kMaxFlowStretch, (double) avail / (double) juce::jmax (1.0f, sum));
+        for (size_t k = 0; k < row.size(); ++k)
+        {
+            const int i = row[k];
+            const int w = (int) std::round (minW[(size_t) i] * scale);
+            if (comps[(size_t) i] != nullptr) comps[(size_t) i]->setBounds (line.removeFromLeft (w));
+            else line.removeFromLeft (w);
+            line.removeFromLeft (kRowGap);
+        }
+    }
+}
+
+int gridCols (int width, int n, int minCellW)
+{
+    return juce::jlimit (1, juce::jmax (1, n), (width + kRowGap) / (minCellW + kRowGap));
+}
+
+int gridHeight (int width, int n, int cellH, int minCellW)
+{
+    if (n == 0) return 0;
+    const int cols = gridCols (width, n, minCellW);
+    const int rows = (n + cols - 1) / cols;
+    return rows * cellH + (rows - 1) * kRowGap;
+}
+
+void placeGrid (juce::Rectangle<int> area, const std::vector<juce::Component*>& comps, int cellH, int minCellW)
+{
+    const int n = (int) comps.size();
+    if (n == 0) return;
+    const int cols = gridCols (area.getWidth(), n, minCellW);
+    const int cellW = (area.getWidth() - kRowGap * (cols - 1)) / cols;
+    for (int i = 0; i < n; ++i)
+    {
+        const int row = i / cols, col = i % cols;
+        if (comps[(size_t) i] != nullptr)
+            comps[(size_t) i]->setBounds (area.getX() + col * (cellW + kRowGap), area.getY() + row * (cellH + kRowGap), cellW, cellH);
+    }
+}
+
+// The sidechain drawer's content for one module, as its fixed block sizes.
+int drawerContentHeight (int width, const std::vector<float>& topMinW, int knobCount)
+{
+    int h = 0;
+    if (! topMinW.empty()) h += flowHeight (width, topMinW) + kGap;
+    if (knobCount > 0) h += gridHeight (width, knobCount, kSecondaryCell, kSecondaryMinW);
+    return h;
+}
+
+} // namespace
+
+//==============================================================================
+ParamButton::ParamButton (NorthlineProcessor& p, int paramIndex, int activeValue, const juce::String& text)
+    : juce::TextButton (text), proc (p), index (paramIndex), active (activeValue)
+{
+    setClickingTogglesState (false);
+    setColour (juce::TextButton::buttonOnColourId, colours::pre); // amber while monitoring
+    setTooltip (paramDef (paramIndex).name);
+    attachment = std::make_unique<juce::ParameterAttachment> (*p.param (paramIndex), [this] (float v) {
+        setToggleState (juce::roundToInt (v) == active, juce::dontSendNotification);
+    });
+    attachment->sendInitialUpdate();
+    onClick = [this] {
+        const bool isOn = juce::roundToInt (view::plain (proc, index)) == active;
+        attachment->setValueAsCompleteGesture (isOn ? 0.0f : (float) active);
+    };
+}
+
+void ParamButton::setFocusState (bool highlighted, bool dimmed)
+{
+    getProperties().set ("focus", highlighted);
+    setAlpha (dimmed ? 0.4f : 1.0f);
+    repaint();
+}
+
+//==============================================================================
+DrawerHeader::DrawerHeader (NorthlineProcessor& p, int extParam, std::function<void()> onToggle)
+    : proc (p), ext (extParam), toggle (std::move (onToggle)), lastKeySeen (juce::Time::getMillisecondCounter())
+{
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    setTooltip ("Show or hide the sidechain controls");
+    startTimerHz (5);
+}
+
+DrawerHeader::~DrawerHeader() { stopTimer(); }
+
+void DrawerHeader::setOpen (bool o)
+{
+    if (o == open) return;
+    open = o;
+    repaint();
+}
+
+void DrawerHeader::mouseDown (const juce::MouseEvent&)
+{
+    if (toggle) toggle();
+}
+
+void DrawerHeader::timerCallback()
+{
+    const bool extOn = view::plain (proc, ext) >= 0.5f;
+    const auto now = juce::Time::getMillisecondCounter();
+    if (proc.getStrip().getSidechainDb() > -60.0f) lastKeySeen = now;
+    const Status s = ! extOn ? Status::off : ((now - lastKeySeen) < 2000u ? Status::keyOk : Status::noKey);
+    if (s != status)
+    {
+        status = s;
+        repaint();
+    }
+}
+
+void DrawerHeader::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat();
+    g.setColour (colours::edge);
+    g.drawHorizontalLine (0, 0.0f, r.getWidth());
+
+    juce::Path arrow;
+    const float cy = r.getCentreY();
+    if (open) arrow.addTriangle (4.0f, cy - 3.0f, 12.0f, cy - 3.0f, 8.0f, cy + 3.0f);
+    else arrow.addTriangle (5.0f, cy - 4.0f, 5.0f, cy + 4.0f, 10.0f, cy);
+    g.setColour (isMouseOver() ? colours::text : colours::dim);
+    g.fillPath (arrow);
+
+    g.setFont (NorthlineLookAndFeel::font (11.5f, true));
+    g.drawText ("SIDECHAIN", r.withTrimmedLeft (18.0f), juce::Justification::centredLeft);
+
+    if (status != Status::off)
+    {
+        const bool ok = status == Status::keyOk;
+        const juce::String text = ok ? juce::String ("key signal") : juce::String ("no key signal");
+        g.setFont (NorthlineLookAndFeel::font (11.0f));
+        const float textW = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), text);
+        const auto textArea = r.removeFromRight (textW + 4.0f);
+        g.setColour (colours::dim);
+        g.drawText (text, textArea, juce::Justification::centredRight);
+        g.setColour (ok ? colours::meterGreen : colours::pre);
+        g.fillEllipse (textArea.getX() - 12.0f, cy - 4.0f, 8.0f, 8.0f);
+    }
 }
 
 //==============================================================================
@@ -31,6 +216,8 @@ ModulePanel::ModulePanel (NorthlineProcessor& p, int id, int onParam, int modePa
 
     onWatcher = std::make_unique<juce::ParameterAttachment> (*p.param (onParam), [this] (float) { updateBodyEnabled(); });
 }
+
+ModulePanel::~ModulePanel() = default;
 
 void ModulePanel::updateBodyEnabled()
 {
@@ -71,25 +258,32 @@ Segmented* ModulePanel::segmented (int index)
     return s;
 }
 
-void ModulePanel::row (juce::Rectangle<int> r, std::initializer_list<juce::Component*> items, int gap)
+ParamButton* ModulePanel::paramButton (int index, int activeValue, const juce::String& text)
 {
-    const int n = (int) items.size();
-    if (n == 0) return;
-    const int w = (r.getWidth() - gap * (n - 1)) / n;
-    for (auto* c : items)
-    {
-        auto cell = r.removeFromLeft (w);
-        r.removeFromLeft (gap);
-        if (c != nullptr) c->setBounds (cell);
-    }
+    auto* b = new ParamButton (proc, index, activeValue, text);
+    owned.add (b);
+    addAndMakeVisible (b);
+    return b;
 }
 
-juce::Rectangle<int> ModulePanel::sectionLabel (juce::Rectangle<int>& body, const juce::String& text)
+void ModulePanel::relayoutOn (int paramIndex)
 {
-    auto r = body.removeFromTop (14);
-    labels.push_back ({ r, text });
-    body.removeFromTop (4);
-    return r;
+    layoutWatchers.push_back (std::make_unique<juce::ParameterAttachment> (*proc.param (paramIndex), [this] (float) { resized(); }));
+}
+
+DrawerHeader* ModulePanel::makeDrawer (int extParam)
+{
+    drawerBar = std::make_unique<DrawerHeader> (proc, extParam, [this] {
+        drawerOpen = ! drawerOpen;
+        resized();
+    });
+    addAndMakeVisible (*drawerBar);
+    return drawerBar.get();
+}
+
+int ModulePanel::chipWidth (const juce::String& text) noexcept
+{
+    return juce::jmax (44, 16 + 7 * text.length());
 }
 
 void ModulePanel::setCpuUs (float us, float blockUs)
@@ -138,51 +332,155 @@ void ModulePanel::resized()
     updateBodyEnabled();
 }
 
+void ModulePanel::applyPlan (juce::Rectangle<int> body, const Plan& pl)
+{
+    const int w = body.getWidth();
+    std::vector<float> topW, bottomW, drawerTopW;
+    for (const auto& it : pl.top) topW.push_back (it.minWidth);
+    for (const auto& it : pl.bottom) bottomW.push_back (it.minWidth);
+    for (const auto& it : pl.drawerTop) drawerTopW.push_back (it.minWidth);
+
+    std::vector<juce::Component*> topC, bottomC, drawerTopC;
+    for (const auto& it : pl.top) topC.push_back (it.comp);
+    for (const auto& it : pl.bottom) bottomC.push_back (it.comp);
+    for (const auto& it : pl.drawerTop) drawerTopC.push_back (it.comp);
+
+    const int topH = topW.empty() ? 0 : flowHeight (w, topW) + kGap;
+    const int bottomH = bottomW.empty() ? 0 : flowHeight (w, bottomW) + kGap;
+    const int meterH = (int) pl.meters.size() * (kMeterH + kGap);
+    const int primH = pl.primary.empty() ? 0 : gridHeight (w, (int) pl.primary.size(), kPrimaryCell, kPrimaryMinW) + kGap;
+    const int secH = pl.secondary.empty() ? 0 : gridHeight (w, (int) pl.secondary.size(), kSecondaryCell, kSecondaryMinW) + kGap;
+    const bool drawerShown = pl.drawer && drawerBar != nullptr;
+    int drawerH = 0;
+    if (drawerShown)
+    {
+        drawerH = kDrawerBar;
+        if (drawerOpen) drawerH += kGap + drawerContentHeight (w, drawerTopW, (int) pl.drawerKnobs.size());
+    }
+    const int fixed = topH + meterH + primH + secH + bottomH + drawerH;
+    const int displayH = pl.display != nullptr ? juce::jmax (pl.displayMin, body.getHeight() - fixed) : 0;
+
+    std::vector<juce::Component*> placed;
+    auto r = body;
+    if (! topC.empty())
+    {
+        placeFlow (r.removeFromTop (topH - kGap), topC, topW);
+        r.removeFromTop (kGap);
+        placed.insert (placed.end(), topC.begin(), topC.end());
+    }
+    if (pl.display != nullptr)
+    {
+        pl.display->setBounds (r.removeFromTop (displayH));
+        r.removeFromTop (kGap);
+        placed.push_back (pl.display);
+    }
+    for (auto* m : pl.meters)
+    {
+        m->setBounds (r.removeFromTop (kMeterH));
+        r.removeFromTop (kGap);
+        placed.push_back (m);
+    }
+    if (! pl.primary.empty())
+    {
+        placeGrid (r.removeFromTop (primH - kGap), pl.primary, kPrimaryCell, kPrimaryMinW);
+        r.removeFromTop (kGap);
+        placed.insert (placed.end(), pl.primary.begin(), pl.primary.end());
+    }
+    if (! pl.secondary.empty())
+    {
+        placeGrid (r.removeFromTop (secH - kGap), pl.secondary, kSecondaryCell, kSecondaryMinW);
+        r.removeFromTop (kGap);
+        placed.insert (placed.end(), pl.secondary.begin(), pl.secondary.end());
+    }
+    if (! bottomC.empty())
+    {
+        placeFlow (r.removeFromTop (bottomH - kGap), bottomC, bottomW);
+        r.removeFromTop (kGap);
+        placed.insert (placed.end(), bottomC.begin(), bottomC.end());
+    }
+    if (drawerShown)
+    {
+        drawerBar->setBounds (r.removeFromTop (kDrawerBar));
+        drawerBar->setOpen (drawerOpen);
+        placed.push_back (drawerBar.get());
+        if (drawerOpen)
+        {
+            r.removeFromTop (kGap);
+            if (! drawerTopC.empty())
+            {
+                const int h = flowHeight (w, drawerTopW);
+                placeFlow (r.removeFromTop (h), drawerTopC, drawerTopW);
+                r.removeFromTop (kGap);
+                placed.insert (placed.end(), drawerTopC.begin(), drawerTopC.end());
+            }
+            if (! pl.drawerKnobs.empty())
+            {
+                placeGrid (r.removeFromTop (gridHeight (w, (int) pl.drawerKnobs.size(), kSecondaryCell, kSecondaryMinW)),
+                           pl.drawerKnobs, kSecondaryCell, kSecondaryMinW);
+                placed.insert (placed.end(), pl.drawerKnobs.begin(), pl.drawerKnobs.end());
+            }
+        }
+    }
+    else if (drawerBar != nullptr)
+    {
+        drawerBar->setVisible (false);
+    }
+
+    // Every owned control that the plan does not place (contextual hiding) is hidden.
+    for (auto* c : owned)
+        c->setVisible (std::find (placed.begin(), placed.end(), c) != placed.end());
+}
+
 //==============================================================================
-PrePanel::PrePanel (NorthlineProcessor& p) : ModulePanel (p, modPre, P::preOn, P::preMode)
+PrePanel::PrePanel (NorthlineProcessor& p) : ModulePanel (p, modPre, P::preOn, P::preMode), harmonics (p.getStrip())
 {
     satOn = chip (P::satOn, "SAT");
     satType = choice (P::satType);
     hq = chip (P::quality, "HQ");
     hq->setTooltip ("Global quality. HQ oversamples the nonlinear stages (lower aliasing)");
+    satAuto = chip (P::satAutoGain, "AUTO");
+    satAuto->setTooltip ("Calibrated make-up gain: holds the operating level as the drive moves");
     drive = knob (P::satDrive, "Drive");
-    thumpOn = chip (P::weightOn, "WEIGHT");
-    thumpAmt = choice (P::weightAmt);
+    tone = knob (P::satTone, "Tone");
+    hpFreq = knob (P::hpFreq, "HP Freq");
+    lpFreq = knob (P::lpFreq, "LP Freq");
+    mix = knob (P::satMix, "Mix");
+    hpRes = knob (P::hpRes, "HP Res");
+    lpRes = knob (P::lpRes, "LP Res");
+    thumpFreq = knob (P::weightFreq, "Wt Freq");
     hpOn = chip (P::hpOn, "HP");
     hpSlope = choice (P::hpSlope);
     lpOn = chip (P::lpOn, "LP");
     lpSlope = choice (P::lpSlope);
-    hpFreq = knob (P::hpFreq, "HP Freq");
-    hpRes = knob (P::hpRes, "Res");
-    lpFreq = knob (P::lpFreq, "LP Freq");
-    lpRes = knob (P::lpRes, "Res");
+    thumpOn = chip (P::weightOn, "WEIGHT");
+    thumpAmt = choice (P::weightAmt);
     target = choice (P::filtTarget);
     target->setTooltip ("Filter target in MS mode: both, mid only or side only (e.g. high-pass the side for mono bass)");
+    display = make<PreDisplay> (p, harmonics);
+    relayoutOn (P::preMode);
+}
+
+PrePanel::~PrePanel() { harmonics.detach(); }
+
+void PrePanel::showingChanged()
+{
+    if (isShowing()) harmonics.attach();
+    else harmonics.detach();
 }
 
 void PrePanel::layoutBody (juce::Rectangle<int> r)
 {
-    sectionLabel (r, "SATURATION");
-    row (r.removeFromTop (kRowH), { satOn, satType, hq });
-    r.removeFromTop (kGap);
-    auto kr = r.removeFromTop (kKnobH);
-    drive->setBounds (kr.removeFromLeft (kr.getWidth() / 2));
-    kr.removeFromLeft (8);
-    auto stack = kr.withSizeKeepingCentre (kr.getWidth(), kRowH * 2 + 6);
-    thumpOn->setBounds (stack.removeFromTop (kRowH));
-    stack.removeFromTop (6);
-    thumpAmt->setBounds (stack);
-    r.removeFromTop (kGap + 4);
-
-    sectionLabel (r, "FILTERS");
-    auto fr = r.removeFromTop (kRowH);
-    row (fr, { hpOn, hpSlope, lpOn, lpSlope });
-    r.removeFromTop (kGap);
-    row (r.removeFromTop (kKnobH), { hpFreq, hpRes, lpFreq, lpRes }, 2);
-    r.removeFromTop (kGap);
-    auto tr = r.removeFromTop (kRowH);
-    target->setBounds (tr.removeFromRight (tr.getWidth() / 2));
-    labels.push_back ({ tr, "MS TARGET" });
+    const bool ms = view::plain (proc, P::preMode) >= 0.5f;
+    Plan pl;
+    pl.top = { { satOn, (float) chipWidth ("SAT") }, { satType, 80.0f }, { hq, (float) chipWidth ("HQ") }, { satAuto, (float) chipWidth ("AUTO") } };
+    pl.display = display;
+    pl.displayMin = 150;
+    pl.primary = { drive, tone, hpFreq, lpFreq };
+    pl.secondary = { mix, hpRes, lpRes, thumpFreq };
+    pl.bottom = { { hpOn, (float) chipWidth ("HP") }, { hpSlope, 64.0f }, { lpOn, (float) chipWidth ("LP") }, { lpSlope, 64.0f },
+                  { thumpOn, (float) chipWidth ("WEIGHT") }, { thumpAmt, 64.0f } };
+    if (ms) pl.bottom.push_back ({ target, 80.0f });
+    applyPlan (r, pl);
 }
 
 //==============================================================================
@@ -191,32 +489,38 @@ GatePanel::GatePanel (NorthlineProcessor& p) : ModulePanel (p, modGate, P::gateO
     type = segmented (P::gateType);
     addAndMakeVisible (gr);
     thresh = knob (P::gateThresh, "Thresh");
-    floorK = knob (P::gateFloor, "Floor");
-    hyst = knob (P::gateHyst, "Hyst");
+    floorK = knob (P::gateFloor, "Range");
     attack = knob (P::gateAttack, "Attack");
-    hold = knob (P::gateHold, "Hold");
     release = knob (P::gateRelease, "Release");
+    hyst = knob (P::gateHyst, "Hyst");
+    hold = knob (P::gateHold, "Hold");
     ratio = knob (P::gateRatio, "Ratio");
+    knee = knob (P::gateKnee, "Knee");
     scHp = knob (P::gateScHp, "SC HP");
     scLp = knob (P::gateScLp, "SC LP");
     ext = chip (P::gateExt, "EXT SC");
-    listen = chip (P::gateListen, "LISTEN");
+    listen = paramButton (P::gateListen, 1, "LISTEN");
+    listen->setTooltip ("Hear the key signal (transient, amber while on)");
+    display = make<LevelScope> (p, LevelScope::Kind::Gate);
+    makeDrawer (P::gateExt);
+    relayoutOn (P::gateType);
 }
 
 void GatePanel::layoutBody (juce::Rectangle<int> r)
 {
-    type->setBounds (r.removeFromTop (kRowH));
-    r.removeFromTop (kGap);
-    gr.setBounds (r.removeFromTop (12));
-    r.removeFromTop (kGap);
-    row (r.removeFromTop (kKnobH), { thresh, floorK, hyst }, 2);
-    r.removeFromTop (kGap);
-    row (r.removeFromTop (kKnobH), { attack, hold, release }, 2);
-    r.removeFromTop (kGap);
-    sectionLabel (r, "SIDECHAIN");
-    row (r.removeFromTop (kKnobH), { ratio, scHp, scLp }, 2);
-    r.removeFromTop (kGap);
-    row (r.removeFromTop (kRowH), { ext, listen });
+    const bool expander = juce::roundToInt (view::plain (proc, P::gateType)) == 1; // expander ratio and knee only
+    Plan pl;
+    pl.top = { { type, 190.0f } };
+    pl.display = display;
+    pl.displayMin = 140;
+    pl.meters = { &gr };
+    pl.primary = { thresh, floorK, attack, release };
+    pl.secondary = { hyst, hold };
+    if (expander) { pl.secondary.push_back (ratio); pl.secondary.push_back (knee); }
+    pl.drawer = true;
+    pl.drawerTop = { { ext, (float) chipWidth ("EXT SC") }, { listen, (float) chipWidth ("LISTEN") } };
+    pl.drawerKnobs = { scHp, scLp };
+    applyPlan (r, pl);
 }
 
 //==============================================================================
@@ -237,234 +541,45 @@ DsPanel::DsPanel (NorthlineProcessor& p) : ModulePanel (p, modDs, P::dsOn, P::ds
     relative = chip (P::dsRelative, "REL");
     relative->setTooltip ("Relative detection: threshold follows the overall level, so de-essing stays consistent on loud and quiet passages");
     ext = chip (P::dsExt, "EXT");
-    listen = choice (P::dsListen);
-    addAndMakeVisible (gr1);
-    addAndMakeVisible (gr2);
+    listenB1 = paramButton (P::dsListen, 1, "BAND 1");
+    listenB2 = paramButton (P::dsListen, 2, "BAND 2");
+    listenDelta = paramButton (P::dsListen, 3, "DELTA");
+    listenB1->setTooltip ("Hear band 1 (transient, amber while on)");
+    listenB2->setTooltip ("Hear band 2 (transient, amber while on)");
+    listenDelta->setTooltip ("Hear what the de-esser removes (transient, amber while on)");
+    display = make<LevelScope> (p, LevelScope::Kind::DeEss);
+    makeDrawer (P::dsExt);
 }
 
 void DsPanel::layoutBody (juce::Rectangle<int> r)
 {
-    auto band = [&] (Chip* on, ChoiceBox* type, Knob* f, Knob* t, Knob* rg, GrBar& g)
-    {
-        auto top = r.removeFromTop (kRowH);
-        on->setBounds (top.removeFromLeft (top.getWidth() / 2 - 2));
-        top.removeFromLeft (4);
-        type->setBounds (top);
-        r.removeFromTop (4);
-        row (r.removeFromTop (kKnobH), { f, t, rg }, 2);
-        r.removeFromTop (3);
-        g.setBounds (r.removeFromTop (11));
-        r.removeFromTop (kGap + 2);
-    };
-    band (on1, type1, freq1, thresh1, range1, gr1);
-    band (on2, type2, freq2, thresh2, range2, gr2);
-    row (r.removeFromTop (kKnobH), { release, out }, 2);
-    r.removeFromTop (kGap);
-    auto br = r.removeFromTop (kRowH);
-    row (br, { relative, ext, listen });
+    Plan pl;
+    pl.top = { { on1, (float) chipWidth ("BAND 1") }, { type1, 80.0f }, { on2, (float) chipWidth ("BAND 2") }, { type2, 80.0f },
+               { relative, (float) chipWidth ("REL") } };
+    pl.display = display;
+    pl.displayMin = 140;
+    pl.primary = { thresh1, thresh2, release, out };
+    pl.secondary = { freq1, range1, freq2, range2 };
+    pl.drawer = true;
+    pl.drawerTop = { { ext, (float) chipWidth ("EXT") }, { listenB1, (float) chipWidth ("BAND 1") },
+                     { listenB2, (float) chipWidth ("BAND 2") }, { listenDelta, (float) chipWidth ("DELTA") } };
+    applyPlan (r, pl);
 }
 
 //==============================================================================
-EqDisplay::EqDisplay (NorthlineProcessor& p) : proc (p)
+EqPanel::EqPanel (NorthlineProcessor& p) : ModulePanel (p, modEq, P::eqOn, P::eqMode), analyser (p.getStrip())
 {
-    setRepaintsOnMouseActivity (false);
-    startTimerHz (20);
-}
+    analyserOn.setClickingTogglesState (true);
+    analyserOn.setToggleState (true, juce::dontSendNotification);
+    analyserOn.setTooltip ("Show the pre and post spectrum of the EQ (analysed on a background thread)");
+    analyserOn.onClick = [this] { updateAnalyser(); };
+    frozen.setClickingTogglesState (true);
+    frozen.setTooltip ("Freeze the analyser display");
+    frozen.onClick = [this] { analyser.setFrozen (frozen.getToggleState()); };
+    addAndMakeVisible (analyserOn);
+    addAndMakeVisible (frozen);
 
-float EqDisplay::xForFreq (float f) const
-{
-    return (float) getWidth() * std::log (f / 20.0f) / std::log (1000.0f);
-}
-
-float EqDisplay::freqForX (float x) const
-{
-    return 20.0f * std::pow (1000.0f, juce::jlimit (0.0f, 1.0f, x / (float) getWidth()));
-}
-
-float EqDisplay::yForDb (float db) const
-{
-    const float h = (float) getHeight() - 4.0f;
-    return 2.0f + h * 0.5f * (1.0f - db / kRange);
-}
-
-float EqDisplay::dbForY (float y) const
-{
-    const float h = (float) getHeight() - 4.0f;
-    return kRange * (1.0f - 2.0f * (y - 2.0f) / h);
-}
-
-void EqDisplay::timerCallback()
-{
-    std::vector<float> v;
-    v.reserve (40);
-    for (int i = P::eqOn; i <= P::eqHighDynExt; ++i) v.push_back (pv (i));
-    for (int i : { (int) P::preOn, (int) P::hpOn, (int) P::hpFreq, (int) P::hpSlope, (int) P::hpRes,
-                   (int) P::lpOn, (int) P::lpFreq, (int) P::lpSlope, (int) P::lpRes })
-        v.push_back (pv (i));
-    v.push_back ((float) getWidth());
-    if (v != lastValues)
-    {
-        lastValues = std::move (v);
-        rebuild();
-        repaint();
-    }
-}
-
-void EqDisplay::rebuild()
-{
-    const double fs = 48000.0; // display reference rate
-    const int w = juce::jmax (2, getWidth());
-    curve.clear();
-    fill.clear();
-    for (auto& b : bandCurves) b.clear();
-
-    std::array<SvfCoefs, 4> coefs {};
-    std::array<bool, 4> active {};
-    const bool eqOn = pv (P::eqOn) >= 0.5f;
-    for (int b = 0; b < 4; ++b)
-    {
-        const int o = P::eqLowOn + b * P::kEqBandStride;
-        active[(size_t) b] = eqOn && pv (o) >= 0.5f && std::abs (pv (o + 3)) > 0.01f;
-        coefs[(size_t) b] = EqModule::bandCoefs (b, (int) std::lround (pv (o + 1)), fs, pv (o + 2), pv (o + 3), pv (o + 4));
-        handles[(size_t) b] = { xForFreq (pv (o + 2)), yForDb (pv (o) >= 0.5f ? pv (o + 3) : 0.0f) };
-    }
-
-    const bool preOn = pv (P::preOn) >= 0.5f;
-    SlopeFilter hp, lp;
-    const bool hpOn = preOn && pv (P::hpOn) >= 0.5f, lpOn = preOn && pv (P::lpOn) >= 0.5f;
-    if (hpOn) { hp.prepare (fs); hp.setParams (true, pv (P::hpFreq), (int) std::lround (pv (P::hpSlope)), pv (P::hpRes)); hp.reset(); hp.updateControl(); }
-    if (lpOn) { lp.prepare (fs); lp.setParams (false, pv (P::lpFreq), (int) std::lround (pv (P::lpSlope)), pv (P::lpRes)); lp.reset(); lp.updateControl(); }
-
-    for (int x = 0; x <= w; x += 2)
-    {
-        const float f = freqForX ((float) x);
-        float total = 1.0f;
-        for (int b = 0; b < 4; ++b)
-        {
-            const float m = coefs[(size_t) b].magnitude (f, fs);
-            if (active[(size_t) b])
-            {
-                total *= m;
-                const float y = yForDb (juce::Decibels::gainToDecibels (m));
-                if (x == 0) bandCurves[(size_t) b].startNewSubPath ((float) x, y);
-                else bandCurves[(size_t) b].lineTo ((float) x, y);
-            }
-        }
-        if (hpOn) total *= hp.magnitude (f);
-        if (lpOn) total *= lp.magnitude (f);
-        const float y = juce::jlimit (-10.0f, (float) getHeight() + 10.0f, yForDb (juce::Decibels::gainToDecibels (total, -60.0f)));
-        if (x == 0) curve.startNewSubPath ((float) x, y);
-        else curve.lineTo ((float) x, y);
-    }
-    fill = curve;
-    fill.lineTo ((float) w, yForDb (0.0f));
-    fill.lineTo (0.0f, yForDb (0.0f));
-    fill.closeSubPath();
-}
-
-void EqDisplay::paint (juce::Graphics& g)
-{
-    auto r = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0xff14171c));
-    g.fillRoundedRectangle (r, 4.0f);
-
-    g.setFont (NorthlineLookAndFeel::font (9.5f));
-    for (float f : { 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f })
-    {
-        const float x = xForFreq (f);
-        g.setColour (colours::edge.withAlpha (0.7f));
-        g.drawVerticalLine ((int) x, r.getY(), r.getBottom());
-        g.setColour (colours::faint);
-        g.drawText (f >= 1000.0f ? juce::String ((int) (f / 1000.0f)) + "k" : juce::String ((int) f), juce::Rectangle<float> (x + 2, r.getBottom() - 12, 30, 11), juce::Justification::left);
-    }
-    for (float db : { -12.0f, -6.0f, 6.0f, 12.0f })
-    {
-        g.setColour (colours::edge.withAlpha (0.5f));
-        g.drawHorizontalLine ((int) yForDb (db), r.getX(), r.getRight());
-    }
-    g.setColour (colours::edge);
-    g.drawHorizontalLine ((int) yForDb (0.0f), r.getX(), r.getRight());
-
-    for (auto& b : bandCurves)
-    {
-        g.setColour (colours::eq.withAlpha (0.25f));
-        g.strokePath (b, juce::PathStrokeType (1.0f));
-    }
-    g.setColour (colours::eq.withAlpha (0.18f));
-    g.fillPath (fill);
-    g.setColour (colours::eq);
-    g.strokePath (curve, juce::PathStrokeType (1.8f));
-
-    static const char* names[] { "L", "M", "T", "H" };
-    for (int b = 0; b < 4; ++b)
-    {
-        const auto h = handles[(size_t) b];
-        const bool on = pv (P::eqLowOn + b * P::kEqBandStride) >= 0.5f;
-        g.setColour (on ? colours::eq : colours::faint);
-        g.fillEllipse (h.x - 6.0f, h.y - 6.0f, 12.0f, 12.0f);
-        g.setColour (juce::Colours::black);
-        g.setFont (NorthlineLookAndFeel::font (9.0f, true));
-        g.drawText (names[b], juce::Rectangle<float> (12, 12).withCentre (h), juce::Justification::centred);
-    }
-}
-
-void EqDisplay::setParam (int index, float plain)
-{
-    auto* p = proc.param (index);
-    p->setValueNotifyingHost (p->convertTo0to1 (plain));
-}
-
-void EqDisplay::mouseDown (const juce::MouseEvent& e)
-{
-    dragBand = -1;
-    float best = 14.0f;
-    for (int b = 0; b < 4; ++b)
-    {
-        const float d = handles[(size_t) b].getDistanceFrom (e.position);
-        if (d < best) { best = d; dragBand = b; }
-    }
-    if (dragBand >= 0)
-    {
-        const int o = P::eqLowOn + dragBand * 6;
-        proc.param (o + 2)->beginChangeGesture();
-        proc.param (o + 3)->beginChangeGesture();
-        if (pv (o) < 0.5f) { proc.param (o)->beginChangeGesture(); setParam (o, 1.0f); proc.param (o)->endChangeGesture(); }
-    }
-}
-
-void EqDisplay::mouseDrag (const juce::MouseEvent& e)
-{
-    if (dragBand < 0) return;
-    const int o = P::eqLowOn + dragBand * 6;
-    setParam (o + 2, juce::jlimit (20.0f, 20000.0f, freqForX (e.position.x)));
-    setParam (o + 3, juce::jlimit (-18.0f, 18.0f, dbForY (e.position.y)));
-}
-
-void EqDisplay::mouseUp (const juce::MouseEvent&)
-{
-    if (dragBand < 0) return;
-    const int o = P::eqLowOn + dragBand * 6;
-    proc.param (o + 2)->endChangeGesture();
-    proc.param (o + 3)->endChangeGesture();
-    dragBand = -1;
-}
-
-void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
-{
-    for (int b = 0; b < 4; ++b)
-        if (handles[(size_t) b].getDistanceFrom (e.position) < 10.0f)
-        {
-            const int o = P::eqLowOn + b * P::kEqBandStride;
-            proc.param (o + 3)->beginChangeGesture();
-            setParam (o + 3, 0.0f);
-            proc.param (o + 3)->endChangeGesture();
-        }
-}
-
-//==============================================================================
-EqPanel::EqPanel (NorthlineProcessor& p) : ModulePanel (p, modEq, P::eqOn, P::eqMode), display (p)
-{
-    addAndMakeVisible (display);
+    curve = choice (P::eqChar);
     static const char* names[] { "LOW", "MID", "TONE", "HIGH" };
     for (int b = 0; b < 4; ++b)
     {
@@ -472,37 +587,102 @@ EqPanel::EqPanel (NorthlineProcessor& p) : ModulePanel (p, modEq, P::eqOn, P::eq
         auto& band = bands[(size_t) b];
         band.on = chip (o, names[b]);
         band.type = choice (o + 1);
-        band.freq = knob (o + 2, "Freq");
         band.gain = knob (o + 3, "Gain");
+        band.freq = knob (o + 2, "Freq");
         band.q = knob (o + 4, "Q");
         band.target = choice (o + 5);
         band.target->setTooltip ("Band target in MS mode: both, mid only or side only");
     }
+    display = make<EqView> (p, analyser);
+    relayoutOn (P::eqMode);
+}
+
+EqPanel::~EqPanel() { analyser.detach(); }
+
+void EqPanel::showingChanged() { updateAnalyser(); }
+
+void EqPanel::updateAnalyser()
+{
+    const bool shown = analyserOn.getToggleState();
+    if (shown && isShowing()) analyser.attach();
+    else analyser.detach();
+    if (display != nullptr) display->setAnalyserShown (shown);
 }
 
 void EqPanel::layoutBody (juce::Rectangle<int> r)
 {
-    display.setBounds (r.removeFromTop (138));
-    r.removeFromTop (kGap + 2);
-    const int colW = (r.getWidth() - 3 * 4) / 4;
+    const bool ms = view::plain (proc, P::eqMode) >= 0.5f;
+
+    auto top = r.removeFromTop (kRowH);
+    analyserOn.setBounds (top.removeFromLeft (96));
+    top.removeFromLeft (kRowGap);
+    frozen.setBounds (top.removeFromLeft (72));
+    top.removeFromLeft (kRowGap);
+    curve->setBounds (top);
+    r.removeFromTop (kGap);
+
+    // Band columns: type, gain (primary dial), freq and Q (secondary dials), and the M/S target.
+    const int bandsH = kRowH + kRowGap + kRowH + kRowGap + kPrimaryCell + kRowGap + kSecondaryCell + kRowGap + kRowH;
+    auto bandsArea = r.removeFromBottom (bandsH);
+    r.removeFromBottom (kGap);
+    display->setBounds (r);
+
+    const int colW = (bandsArea.getWidth() - kRowGap * 3) / 4;
     for (int b = 0; b < 4; ++b)
     {
-        auto c = r.removeFromLeft (colW);
-        r.removeFromLeft (4);
+        auto c = bandsArea.removeFromLeft (colW);
+        bandsArea.removeFromLeft (kRowGap);
         auto& band = bands[(size_t) b];
         band.on->setBounds (c.removeFromTop (kRowH));
-        c.removeFromTop (4);
+        c.removeFromTop (kRowGap);
         band.type->setBounds (c.removeFromTop (kRowH));
-        c.removeFromTop (4);
-        band.freq->setBounds (c.removeFromTop (kKnobH));
-        band.gain->setBounds (c.removeFromTop (kKnobH));
-        band.q->setBounds (c.removeFromTop (kKnobH));
-        c.removeFromTop (4);
-        band.target->setBounds (c.removeFromTop (kRowH));
+        c.removeFromTop (kRowGap);
+        band.gain->setBounds (c.removeFromTop (kPrimaryCell));
+        c.removeFromTop (kRowGap);
+        auto fq = c.removeFromTop (kSecondaryCell);
+        band.freq->setBounds (fq.removeFromLeft (fq.getWidth() / 2));
+        band.q->setBounds (fq);
+        c.removeFromTop (kRowGap);
+        band.target->setVisible (ms);
+        if (ms) band.target->setBounds (c.removeFromTop (kRowH));
     }
 }
 
 //==============================================================================
+namespace
+{
+// Comp display: the scope with the static curve inset on its right (hidden in a narrow column).
+class CompHost : public juce::Component
+{
+public:
+    CompHost (NorthlineProcessor& p) : scope (p, LevelScope::Kind::Comp), curve (p, scope)
+    {
+        addAndMakeVisible (scope);
+        addAndMakeVisible (curve);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        if (r.getWidth() >= 360)
+        {
+            curve.setVisible (true);
+            curve.setBounds (r.removeFromRight (r.getWidth() * 3 / 10).reduced (0, 2));
+            r.removeFromRight (6);
+        }
+        else
+        {
+            curve.setVisible (false);
+        }
+        scope.setBounds (r);
+    }
+
+private:
+    LevelScope scope;
+    CompCurve curve;
+};
+} // namespace
+
 CompPanel::CompPanel (NorthlineProcessor& p) : ModulePanel (p, modComp, P::compOn, P::compMode)
 {
     type = segmented (P::compType);
@@ -511,33 +691,37 @@ CompPanel::CompPanel (NorthlineProcessor& p) : ModulePanel (p, modComp, P::compO
     ratio = knob (P::compRatio, "Ratio");
     attack = knob (P::compAttack, "Attack");
     release = knob (P::compRelease, "Release");
+    knee = knob (P::compKnee, "Knee");
+    range = knob (P::compRange, "Range");
     mix = knob (P::compMix, "Mix");
     out = knob (P::compOut, "Output");
     scHp = knob (P::compScHp, "SC HP");
+    scLp = knob (P::compScLp, "SC LP");
     scFreq = knob (P::compScBellFreq, "SC Freq");
     scGain = knob (P::compScBellGain, "SC Gain");
     makeup = chip (P::compMakeup, "AUTO GAIN");
     makeup->setTooltip ("Automatic make-up gain. Off by default so the compressor can be used for ducking");
-    ext = chip (P::compExt, "EXT");
-    listen = chip (P::compListen, "LISTEN");
+    autoRel = chip (P::compAutoRel, "AUTO REL");
+    ext = chip (P::compExt, "EXT SC");
+    listenKey = paramButton (P::compListen, 1, "KEY");
+    listenDelta = paramButton (P::compListen, 2, "DELTA");
+    listenKey->setTooltip ("Hear the key signal (transient, amber while on)");
+    listenDelta->setTooltip ("Hear what the compressor removes (transient, amber while on)");
+    display = make<CompHost> (p);
+    makeDrawer (P::compExt);
 }
 
 void CompPanel::layoutBody (juce::Rectangle<int> r)
 {
-    type->setBounds (r.removeFromTop (kRowH));
-    r.removeFromTop (kGap);
-    gr.setBounds (r.removeFromTop (12));
-    r.removeFromTop (kGap);
-    row (r.removeFromTop (kKnobH), { thresh, ratio, attack }, 2);
-    r.removeFromTop (kGap);
-    row (r.removeFromTop (kKnobH), { release, mix, out }, 2);
-    r.removeFromTop (kGap);
-    sectionLabel (r, "SIDECHAIN");
-    row (r.removeFromTop (kKnobH), { scHp, scFreq, scGain }, 2);
-    r.removeFromTop (kGap);
-    auto cr = r.removeFromTop (kRowH);
-    makeup->setBounds (cr.removeFromLeft (cr.getWidth() * 4 / 9));
-    cr.removeFromLeft (4);
-    row (cr, { ext, listen });
+    Plan pl;
+    pl.top = { { type, 180.0f }, { makeup, (float) chipWidth ("AUTO GAIN") }, { autoRel, (float) chipWidth ("AUTO REL") } };
+    pl.display = display;
+    pl.displayMin = 150;
+    pl.primary = { thresh, ratio, attack, release };
+    pl.secondary = { knee, range, mix, out };
+    pl.drawer = true;
+    pl.drawerTop = { { ext, (float) chipWidth ("EXT SC") }, { listenKey, (float) chipWidth ("KEY") }, { listenDelta, (float) chipWidth ("DELTA") } };
+    pl.drawerKnobs = { scHp, scLp, scFreq, scGain };
+    applyPlan (r, pl);
 }
 } // namespace nl

@@ -111,7 +111,8 @@ public:
     void setFrozen (bool shouldFreeze) noexcept { frozen.store (shouldFreeze, std::memory_order_relaxed); }
     bool isFrozen() const noexcept { return frozen.load (std::memory_order_relaxed); }
 
-    // Latest frames, spectrum::kDisplayBins dB values each. The hold curve decays at 20 dB per second.
+    // Latest frame into dst (2 * spectrum::kDisplayBins values: the live spectrum, then the peak hold, which decays
+    // at 20 dB per second). False before the first frame.
     bool readPre (float* dst) const noexcept { return channels[0].frame.read (dst); }
     bool readPost (float* dst) const noexcept { return channels[1].frame.read (dst); }
     uint32_t frameCount() const noexcept { return channels[1].frame.version(); }

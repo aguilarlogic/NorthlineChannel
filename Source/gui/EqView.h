@@ -74,6 +74,5 @@ private:
     std::array<float, 4> handleQ {};
     bool msMode = false;
     int dragBand = -1;
-    float dragFreqTarget = 1000.0f, dragGainTarget = 0.0f;
 };
 } // namespace nl
