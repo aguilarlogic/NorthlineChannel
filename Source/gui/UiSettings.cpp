@@ -46,11 +46,6 @@ void UiSettings::useFile (const juce::File& f)
 
 juce::File UiSettings::getFile() const { return file; }
 
-void UiSettings::load()
-{
-    // Values are read on demand from props; nothing is cached.
-}
-
 void UiSettings::store()
 {
     if (props == nullptr) return;

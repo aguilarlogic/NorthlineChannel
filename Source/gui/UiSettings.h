@@ -49,7 +49,6 @@ public:
     static float clampScale (float scale);
 
 private:
-    void load();
     void store();
 
     juce::File file;
