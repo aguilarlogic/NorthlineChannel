@@ -1,5 +1,9 @@
 #include "PluginEditor.h"
+#include "HubPanel.h"
 #include "Onboarding.h"
+#include "PresetBrowser.h"
+#include "SmartStartPanel.h"
+#include "../hub/InstanceRegistry.h"
 #include <algorithm>
 
 namespace nl
@@ -107,6 +111,10 @@ void NorthlineEditor::buildContent()
     content.addAndMakeVisible (*topBar);
     topBar->onFocusChanged = [this] { updateFocus(); };
     topBar->onScaleChanged = [this] { setScale (proc.getUiScale(), false); };
+    topBar->onOpenSettings = [this] { openSettings(); };
+    topBar->onOpenPresetBrowser = [this] { openPresetBrowser(); };
+    topBar->onSmartStart = [this] { openSmartStart(); };
+    topBar->onOpenHub = [this] { openHub(); };
 
     chain = std::make_unique<ChainView> (proc);
     content.addAndMakeVisible (*chain);
@@ -271,7 +279,37 @@ bool NorthlineEditor::keyPressed (const juce::KeyPress& key)
         closeOverlay();
         return true;
     }
-    return false;
+    // Undo / redo shortcuts; everything else passes through to the host.
+    return overlay == nullptr && topBar != nullptr && topBar->handleKeyPress (key);
+}
+
+void NorthlineEditor::openPresetBrowser()
+{
+    auto b = std::make_unique<PresetBrowser> (proc);
+    b->onClose = [this] { closeOverlay(); if (topBar) topBar->refresh(); };
+    showOverlay (std::move (b));
+}
+
+void NorthlineEditor::openSmartStart()
+{
+    auto s = std::make_unique<SmartStartPanel> (proc);
+    s->onClose = [this] { closeOverlay(); };
+    showOverlay (std::move (s));
+}
+
+void NorthlineEditor::openHub()
+{
+    auto h = std::make_unique<HubPanel>();
+    h->onClose = [this] { closeOverlay(); };
+    // Another instance can only be brought forward when its editor is open; the host owns the
+    // windows, so a closed editor cannot be opened from here.
+    h->onEditInstance = [] (int id)
+    {
+        if (auto* other = hub::InstanceRegistry::instance().find (id))
+            if (auto* ed = other->getActiveEditor())
+                if (auto* top = ed->getTopLevelComponent()) top->toFront (true);
+    };
+    showOverlay (std::move (h));
 }
 
 void NorthlineEditor::openSettings()

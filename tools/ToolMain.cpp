@@ -1,4 +1,5 @@
 #include "ToolCommon.h"
+#include "gui/PluginEditor.h"
 #include <cstdlib>
 #include <new>
 #include <thread>
@@ -29,7 +30,7 @@ namespace tool
 {
 // Renders the editor off-screen after feeding it ~2 s of program material, so the
 // GUI can be checked (construction, layout, meters) without a DAW.
-static int snapshot (const juce::File& file, int preset)
+static int snapshot (const juce::File& file, int preset, const juce::String& overlay)
 {
     nl::NorthlineProcessor p;
     const double fs = 48000.0;
@@ -40,6 +41,13 @@ static int snapshot (const juce::File& file, int preset)
     else configureEverything (p, true, false);
 
     std::unique_ptr<juce::AudioProcessorEditor> editor (p.createEditor());
+    if (auto* ne = dynamic_cast<nl::NorthlineEditor*> (editor.get()))
+    {
+        if (overlay == "browser") ne->openPresetBrowser();
+        else if (overlay == "smart") ne->openSmartStart();
+        else if (overlay == "hub") ne->openHub();
+        else if (overlay == "settings") ne->openSettings();
+    }
     juce::AudioBuffer<float> buf (2, block);
     juce::MidiBuffer midi;
     juce::Random rng (11);
@@ -92,7 +100,7 @@ int main (int argc, char* argv[])
     if (cmd == "measure") return tool::runMeasure (args);
     if (cmd == "bench" || cmd == "host-bench") return tool::runBench (args);
     if (cmd == "snapshot" && args.size() > 1)
-        return tool::snapshot (juce::File::getCurrentWorkingDirectory().getChildFile (args[1]), args.size() > 2 ? args[2].getIntValue() : 1);
+        return tool::snapshot (juce::File::getCurrentWorkingDirectory().getChildFile (args[1]), args.size() > 2 ? args[2].getIntValue() : 1, args[3]);
 
     std::printf ("NorthlineTool\n"
                  "  test [filter]                run DSP / realtime-safety / state tests (names containing filter)\n"
@@ -101,6 +109,8 @@ int main (int argc, char* argv[])
                  "  bench [--quick]              CPU benchmark of Northline Channel (in-process)\n"
                  "  host-bench <file.vst3> [name-filter] [--quick]\n"
                  "                               load any VST3 (e.g. a competitor strip) and benchmark it the same way\n"
-                 "  snapshot <out.png> [preset]  render the editor to a PNG (factory preset index, -1 = everything on)\n");
+                 "  snapshot <out.png> [preset] [browser|smart|hub|settings]\n"
+                 "                               render the editor to a PNG (factory preset index, -1 = everything on),\n"
+                 "                               optionally with an overlay open\n");
     return 1;
 }

@@ -45,6 +45,11 @@ public:
     void closeOverlay();
     bool hasOverlay() const noexcept { return overlay != nullptr; }
 
+    void openSettings();
+    void openPresetBrowser();
+    void openSmartStart();
+    void openHub();
+
     // Window size: 75 % to 200 % of the base size, always the base aspect ratio.
     void setScale (float scale, bool storeInProcessor);
     float getScale() const noexcept { return scale; }
@@ -63,7 +68,6 @@ private:
     void drainMeters();
     void housekeeping();
     void settingsChanged();
-    void openSettings();
     void openOnboarding();
     void updateFocus();
 
