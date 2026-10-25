@@ -256,7 +256,7 @@ std::set<juce::String> loadFavourites (const juce::File& file)
     std::set<juce::String> keys;
     auto xml = juce::XmlDocument::parse (file);
     if (xml == nullptr || ! xml->hasTagName ("Favourites")) return keys;
-    forEachXmlChildElementWithTagName (*xml, item, "Item")
+    for (auto* item : xml->getChildWithTagNameIterator ("Item"))
         keys.insert (item->getStringAttribute ("key"));
     return keys;
 }

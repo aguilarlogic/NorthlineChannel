@@ -26,7 +26,7 @@ double binFrequency (int bin, double fs, int fftSize) noexcept
 }
 
 Analysis::Analysis (int order)
-    : n (1 << order), fft (order), window ((size_t) (1 << order)), buf ((size_t) (2 * (1 << order)), 0.0f)
+    : n (1 << order), fft (order), window ((size_t) 1 << order), buf ((size_t) 2 << order, 0.0f)
 {
     // Periodic Hann: its coefficients sum to n / 2, which fixes the amplitude scale in analyse().
     for (int i = 0; i < n; ++i)
