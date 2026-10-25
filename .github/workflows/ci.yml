@@ -86,29 +86,3 @@ jobs:
           name: windows-x64-clap
           path: build/NorthlineChannel_artefacts/Release/CLAP/
           if-no-files-found: warn
-
-  macos:
-    # Not verified on macOS yet: a failure here must not block the pipeline.
-    name: macOS (Xcode, VST3 + AU)
-    runs-on: macos-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Fetch JUCE
-        shell: bash
-        run: git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE external/JUCE
-
-      - name: Configure
-        run: cmake -S . -B build -G Xcode
-
-      - name: Build VST3 and AU
-        run: cmake --build build --config Release --parallel --target NorthlineChannel_VST3 NorthlineChannel_AU
-
-      - name: Upload artefacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-vst3-au
-          path: build/NorthlineChannel_artefacts/Release/
-          if-no-files-found: warn

@@ -8,7 +8,7 @@ including the merge commits).
 Status tags on the defects: **fixed** means the change and a named test were both found. **Fixed in code**
 means the change was found but no named acceptance test was. **Partial** means part of the defect is still open.
 
-## 1.0.0 (unreleased)
+## 1.0.0 (2026-10-24)
 
 ### Added
 

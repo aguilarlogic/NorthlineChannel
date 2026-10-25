@@ -9,10 +9,11 @@ How a Northline Channel release is built, validated, signed and published. Autom
 2. Golden files regenerated only with a listening sign-off in the PR that changed the sound.
 3. Version bumped in `CMakeLists.txt` (`project(... VERSION x.y.z)`), changelog written.
 4. Host matrix pass recorded (roadmap 14.9) for this build.
-5. Tag `vX.Y.Z` and push. The workflow builds Windows x64 and ARM64 and macOS universal,
-   runs the validators, signs, packages, notarizes and drafts a GitHub release with checksums.
-6. Install the drafted artefacts on clean machines (Windows 11 x64, Windows 11 ARM64, macOS
-   arm64, macOS x86_64) and smoke-test in one host each, then publish.
+5. Tag `vX.Y.Z` and push. The workflow builds Windows x64 and ARM64, runs the validators,
+   signs (when the secrets are set), packages and publishes a GitHub release with checksums.
+   Releases are Windows only; the macOS packaging below is kept for building by hand.
+6. Install the released installers on clean machines (Windows 11 x64, Windows 11 ARM64) and
+   smoke-test in one host each.
 
 ## Formats
 
