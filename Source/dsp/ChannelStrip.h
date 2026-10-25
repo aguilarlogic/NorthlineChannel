@@ -10,6 +10,7 @@
 #include "MasterSection.h"
 #include "Meters.h"
 #include "PreModule.h"
+#include "ConsumerDemand.h"
 #include "ScopeTap.h"
 #include <array>
 #include <atomic>
@@ -57,7 +58,11 @@ public:
     // discard stale content when the generation changed (and report it through wasReset), so a
     // consumer never reads data from before a prepare(). meterFrames()/outputSamples() give
     // direct access for code that handles the generation itself.
-    SpscRing<MeterFrame>& meterFrames() noexcept { return frames; }
+    SpscRing<MeterFrame>& meterFrames() noexcept
+    {
+        frameDemand.touch(); // a reader is active: the module timings are measured again
+        return frames;
+    }
     SpscRing<StereoSample>& outputSamples() noexcept { return samples; }
     uint32_t getRingGeneration() const noexcept { return ringGeneration.load (std::memory_order_acquire); }
     size_t popMeterFrames (MeterFrame* out, size_t maxCount, bool* wasReset = nullptr) noexcept;
@@ -105,6 +110,17 @@ public:
     void setForceFullParamUpdates (bool on) noexcept { forceFull.store (on); }
     static int maxModuleLatency (double sampleRate) noexcept { return (int) std::ceil (0.020 * sampleRate) + 1024; }
 
+#if NL_TOOL_BUILD
+    // Test seams (tool build only; message thread, while stopped, after prepare): start the control clock at an
+    // absolute sample count, and place the ring generation and the parameter update counters near 2^32.
+    void seedClockForTest (uint32_t count) noexcept { clock.seedForTest (count); }
+    void seedCountersForTest (uint32_t ringGen, uint32_t paramCount) noexcept
+    {
+        ringGeneration.store (ringGen, std::memory_order_release);
+        for (auto& p : paramUpdates) p.store (paramCount, std::memory_order_relaxed);
+    }
+#endif
+
     //==============================================================================
     // Compare and Delta (roadmap 9.3). Transient: never saved, reset when a state loads. Written from the
     // message thread, read by the audio thread once per block.
@@ -146,8 +162,15 @@ private:
     void matchStage (float* const* io, int numChannels, int n);
     void mixStage (float* const* io, int numChannels, int n);
 
-    // Compare / Delta (9.3).
-    struct ModuleLearn { float ew = 0.0f, ed = 0.0f, gainLin = 1.0f; }; // smoothed energy wet and dry, learned wet/dry level
+    // Compare / Delta (9.3). A learner's energies advance once per control segment; the samples of the segment
+    // in progress are kept in segW / segD until it completes.
+    struct ModuleLearn
+    {
+        float ew = 0.0f, ed = 0.0f, gainLin = 1.0f; // smoothed energy wet and dry, learned wet/dry level
+        float segW[kControlBlock] {}, segD[kControlBlock] {};
+    };
+    std::array<float, kControlBlock> learnWeight {}; // weight of each sample of a segment in its energy
+    float learnSegDecay = 1.0f;                       // the smoothing over one whole segment
     void learnLevel (ModuleLearn& l, const float* const* wet, const float* const* dry, int numChannels, int n, uint32_t phase) const noexcept;
     void applyDelta (int id, float* const* io, const float* const* dry, int numChannels, int n, uint32_t phase) noexcept;
     void applyWholeCompare (float* const* io, int numChannels, int n, uint32_t phase) noexcept;
@@ -208,6 +231,7 @@ private:
     std::vector<StereoSample> sampleScratch;
 
     SpscRing<MeterFrame> frames;
+    ConsumerDemand frameDemand; // touched by the frame readers; gates the timings
     SpscRing<StereoSample> samples;
     std::atomic<uint32_t> ringGeneration { 0 };
     uint32_t seenFrameGeneration = 0, seenSampleGeneration = 0; // consumer side

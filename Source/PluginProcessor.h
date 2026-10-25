@@ -125,7 +125,11 @@ public:
     int getHubId() const noexcept { return hubId; }
     juce::String getTrackName() const;
     juce::uint32 getTrackColourARGB() const;   // 0 when the host gives no colour
-    float getCpuLoadPercent() const noexcept { return cpuPercent.load (std::memory_order_relaxed); }
+    float getCpuLoadPercent() const noexcept
+    {
+        cpuDemand.touch(); // a reader is active: the block timing is measured again
+        return cpuPercent.load (std::memory_order_relaxed);
+    }
     void updateTrackProperties (const TrackProperties& properties) override;
 
     // UI accessors: thread-safe, they return copies.
@@ -207,6 +211,7 @@ private:
     juce::String trackName;             // guarded by stateLock
     juce::uint32 trackColourARGB = 0;   // guarded by stateLock
     std::atomic<float> cpuPercent { 0.0f }; // smoothed processBlock time, percent of the block duration
+    mutable ConsumerDemand cpuDemand;      // touched by getCpuLoadPercent(); gates the block timing
     float plainValue (int index) const;
     std::array<float, P::count> currentPlainValues() const;
 

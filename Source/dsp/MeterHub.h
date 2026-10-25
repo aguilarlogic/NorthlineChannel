@@ -199,6 +199,15 @@ struct GatedHistogram
 // safe from any thread (read() is a seqlock reader, the others are atomic requests). scope() is
 // the consumer end of the vectorscope ring: one consumer thread (the UI) owns it.
 // Nothing allocates after prepare().
+//
+// Per chunk (at most one control block, 32 samples, cut at the absolute grid so the result does not
+// depend on the host block size):
+//   - K-weighting: the two biquads as one recursion over both channels (SSE2 lanes), in a
+//     rearranged form with a shorter dependency chain (same filter, rounding differs at 1e-16);
+//   - energy, correlation, VU and peak sums (no feedback, so they overlap with the recursion);
+//   - true peak: the 4x interpolation is evaluated only where a rigorous bound on the 16-sample window
+//     can reach the running maximum or the over threshold. The bound never under-estimates, so the
+//     maximum and the over count are the same as evaluating every sample.
 class MeterHub
 {
 public:
@@ -214,6 +223,16 @@ public:
         subLen = std::max (1, (int) std::lround (0.010 * fs));
         grBinLen = std::max (1, (int) std::lround (fs / kGrPointsPerSecond));
         tpKernel.design (fs);
+        for (int p = 0; p < TruePeakKernel::kMaxPhases; ++p)
+            for (int j = 0; j < TruePeakKernel::kTaps; ++j)
+                for (int k = 0; k < 4; ++k) tpBroad[p][j][k] = tpKernel.h[p][j]; // the kernel, one tap per SIMD vector
+        // Energy of each interpolating phase outside the core taps (Cauchy-Schwarz tail bound, see truePeakPass).
+        for (int p = 1; p < tpKernel.phases; ++p)
+        {
+            tpTailE[p] = 0.0f;
+            for (int j = 0; j < TruePeakKernel::kTaps; ++j)
+                if (j < kCoreLo || j >= kCoreLo + 4) tpTailE[p] += tpKernel.h[p][j] * tpKernel.h[p][j];
+        }
         KWeighting::design (fs, kwProto[0], kwProto[1]);
         vu.prepare (fs / kControlBlock);
         corrDecay = std::exp (-(double) kControlBlock / (0.3 * fs));
@@ -225,10 +244,10 @@ public:
     // Full reset including filter state. Not for use while process() runs on another thread.
     void reset() noexcept
     {
-        kw[0].setup (kwProto[0]);
-        kw[1].setup (kwProto[1]);
+        for (int s = 0; s < 2; ++s) kw[s].setup (kwProto[s]);
         acc[0] = acc[1] = 0.0;
-        tps.reset();
+        std::memset (tpBuf, 0, sizeof (tpBuf));
+        tpMax = 0.0f;
         subRing.fill (0.0);
         subHead = 0;
         subCount = 0;
@@ -357,10 +376,10 @@ public:
     // oldest first, in dB (<= 0), kGrPointsPerSecond per second. Returns the number written.
     int readGrHistory (float* dst, int maxPoints) const noexcept
     {
-        const uint32_t head = grHead.load (std::memory_order_acquire);
-        const int n = (int) std::min<uint32_t> ((uint32_t) std::min (maxPoints, kGrHistoryPoints), head);
+        const uint64_t head = grHead.load (std::memory_order_acquire); // 64 bits: the ring index must not wrap at 2^32
+        const int n = (int) std::min<uint64_t> ((uint64_t) std::min (maxPoints, kGrHistoryPoints), head);
         for (int k = 0; k < n; ++k)
-            dst[k] = grRing[(size_t) ((head - (uint32_t) n + (uint32_t) k) % (uint32_t) kGrHistoryPoints)].load (std::memory_order_relaxed);
+            dst[k] = grRing[(size_t) ((head - (uint64_t) n + (uint64_t) k) % (uint64_t) kGrHistoryPoints)].load (std::memory_order_relaxed);
         return n;
     }
 
@@ -374,13 +393,29 @@ public:
         grBinCount += len;
         while (grBinCount >= grBinLen)
         {
-            const uint32_t h = grHead.load (std::memory_order_relaxed);
-            grRing[(size_t) (h % (uint32_t) kGrHistoryPoints)].store (grBinMin, std::memory_order_relaxed);
+            const uint64_t h = grHead.load (std::memory_order_relaxed);
+            grRing[(size_t) (h % (uint64_t) kGrHistoryPoints)].store (grBinMin, std::memory_order_relaxed);
             grHead.store (h + 1, std::memory_order_release);
             grBinCount -= grBinLen;
             grBinMin = 0.0f;
         }
     }
+
+#if NL_TOOL_BUILD
+    // Test seam (tool build only, not while audio runs): places the counters near their wrap-around, so the
+    // tests can show that the snapshots and the gain-reduction history stay correct across it.
+    //   snapshotSequence: the next MeterSnapshot::sequence is snapshotSequence + 1 (wraps at 2^32)
+    //   seqlock:          the seqlock word (even when at rest; wraps at 2^32)
+    //   grHeadValue:      points in the gain-reduction history (its ring index is taken modulo 1000)
+    //   subBlocks:        sub-blocks since integration started (saturates at 2^31 - 1)
+    void seedCountersForTest (uint32_t snapshotSequence, uint32_t seqlock, uint64_t grHeadValue, uint32_t subBlocks) noexcept
+    {
+        sequenceCounter = snapshotSequence;
+        seq.store (seqlock & ~1u);
+        grHead.store (grHeadValue);
+        sinceReset = subBlocks;
+    }
+#endif
 
     // Exposed for tests.
     const TruePeakKernel& truePeakKernel() const noexcept { return tpKernel; }
@@ -395,6 +430,8 @@ private:
     static constexpr double kBinsPerLu = 100.0; // 0.01 LU resolution
     static constexpr int kBins = 9000;         // -70 .. +20 LUFS
     static constexpr size_t kWords = sizeof (MeterSnapshot) / 8;
+    static constexpr int kTpHistory = TruePeakKernel::kTaps - 1; // samples kept for the 16-tap window
+    static constexpr int kCoreLo = 6; // the true-peak core taps are window taps kCoreLo .. kCoreLo + 3 (see candidateMask)
 
     static float linToDb (float lin) noexcept { return lin > 1.0e-10f ? fastGainToDb (lin) : -200.0f; }
     // Samples above 1e6 (and NaN and Inf) measure as silence.
@@ -425,80 +462,287 @@ private:
         hopPhase = 0;
     }
 
-    // One chunk of at most kControlBlock samples (both channels when Stereo). All per-sample meter
-    // work happens in this single pass: sample peaks, K-weighted energy, correlation and VU sums,
-    // the true-peak interpolation, the overs count and the vectorscope decimation.
+    // K-weighting stage for both channels (two SSE2 lanes). The filter is BiquadD in direct form,
+    // rearranged so that the state recursion has one multiply and one add on its critical path:
+    //   y   = b0 x + z1
+    //   z1' = c x + z2 - a1 z1        c = b1 - a1 b0
+    //   z2' = d x - a2 z1            d = b2 - a2 b0
+    struct KStage
+    {
+        Pair2 b0, a1, a2, c, d, z1, z2;
+
+        void setup (const BiquadD& p) noexcept
+        {
+            const double cc = p.b1 - p.a1 * p.b0, dd = p.b2 - p.a2 * p.b0;
+            b0 = Pair2::make (p.b0, p.b0);
+            a1 = Pair2::make (p.a1, p.a1);
+            a2 = Pair2::make (p.a2, p.a2);
+            c = Pair2::make (cc, cc);
+            d = Pair2::make (dd, dd);
+            z1 = Pair2::make (0.0, 0.0);
+            z2 = Pair2::make (0.0, 0.0);
+        }
+    };
+
+    // One chunk of at most kControlBlock samples (both channels when Stereo).
     template <bool Stereo>
     void processChunk (const float* a, const float* b, int len) noexcept
     {
-        float pk0 = spMax[0], pk1 = spMax[1];
-        Pair2 ee = Pair2::make (acc[0], acc[1]);
-        double xy = accXY, xx = accXX, yy = accYY, rect = vuAcc;
-        const float thr = overThr;
-        const bool trueOvers = thr > 0.0f && overTrue;
-        auto ts = tps.getState();
-
+        constexpr int H = kTpHistory;
+        // Sanitised input with the true-peak history in front: window of output t is tpBuf[c][t .. t+15].
         for (int j = 0; j < len; ++j)
         {
-            const float x0 = sanitize (a[j]);
-            const float x1 = Stereo ? sanitize (b[j]) : x0;
+            tpBuf[0][H + j] = sanitize (a[j]);
+            tpBuf[1][H + j] = Stereo ? sanitize (b[j]) : tpBuf[0][H + j];
+        }
+        const float* L = tpBuf[0] + H;
+        const float* R = tpBuf[1] + H;
 
-            pk0 = std::max (pk0, std::abs (x0));
-            const Pair2 y = kw[1].process (kw[0].process (Pair2::make ((double) x0, (double) x1)));
-            ee = ee + y * y;
+        // Pass 1: K-weighting recursion and energy. Only the recursion is on the critical path, so the
+        // statistics run in a second loop that the out-of-order core can overlap with it.
+        float pk0 = spMax[0], pk1 = spMax[1];
+        double xy = accXY, xx = accXX, yy = accYY, rect = vuAcc;
+#if JUCE_USE_SSE_INTRINSICS
+        __m128d ee = _mm_set_pd (acc[1], acc[0]);
+        KStage& K1 = kw[0];
+        KStage& K2 = kw[1];
+        const __m128d b01 = K1.b0.v, a01 = K1.a1.v, a02 = K1.a2.v, c01 = K1.c.v, d01 = K1.d.v;
+        const __m128d b02 = K2.b0.v, a12 = K2.a1.v, a22 = K2.a2.v, c02 = K2.c.v, d02 = K2.d.v;
+        __m128d s1z1 = K1.z1.v, s1z2 = K1.z2.v, s2z1 = K2.z1.v, s2z2 = K2.z2.v;
+        for (int j = 0; j < len; ++j)
+        {
+            const __m128d x = _mm_set_pd ((double) R[j], (double) L[j]);
+            const __m128d y1 = _mm_add_pd (_mm_mul_pd (b01, x), s1z1);
+            const __m128d n1 = _mm_sub_pd (_mm_add_pd (_mm_mul_pd (c01, x), s1z2), _mm_mul_pd (a01, s1z1));
+            s1z2 = _mm_sub_pd (_mm_mul_pd (d01, x), _mm_mul_pd (a02, s1z1));
+            s1z1 = n1;
+            const __m128d y2 = _mm_add_pd (_mm_mul_pd (b02, y1), s2z1);
+            const __m128d n2 = _mm_sub_pd (_mm_add_pd (_mm_mul_pd (c02, y1), s2z2), _mm_mul_pd (a12, s2z1));
+            s2z2 = _mm_sub_pd (_mm_mul_pd (d02, y1), _mm_mul_pd (a22, s2z1));
+            s2z1 = n2;
+            ee = _mm_add_pd (ee, _mm_mul_pd (y2, y2));
+        }
+        K1.z1.v = s1z1;
+        K1.z2.v = s1z2;
+        K2.z1.v = s2z1;
+        K2.z2.v = s2z2;
+        alignas (16) double lanes[2];
+        _mm_store_pd (lanes, ee);
+        acc[0] = lanes[0];
+        if constexpr (Stereo) acc[1] = lanes[1];
+#else
+        Pair2 ee = Pair2::make (acc[0], acc[1]);
+        KStage k1 = kw[0], k2 = kw[1];
+        for (int j = 0; j < len; ++j)
+        {
+            const float f0 = L[j], f1 = R[j];
+            const Pair2 x = Pair2::make ((double) f0, (double) f1);
+            const Pair2 y1 = k1.b0 * x + k1.z1;
+            const Pair2 n1 = k1.c * x + k1.z2 - k1.a1 * k1.z1;
+            k1.z2 = k1.d * x - k1.a2 * k1.z1;
+            k1.z1 = n1;
+            const Pair2 y2 = k2.b0 * y1 + k2.z1;
+            const Pair2 n2 = k2.c * y1 + k2.z2 - k2.a1 * k2.z1;
+            k2.z2 = k2.d * y1 - k2.a2 * k2.z1;
+            k2.z1 = n2;
+            ee = ee + y2 * y2;
+        }
+        kw[0] = k1;
+        kw[1] = k2;
+        acc[0] = ee.lane (0);
+        if constexpr (Stereo) acc[1] = ee.lane (1);
+#endif
+        // Pass 1b: sample peaks, correlation and VU sums (no feedback).
+        for (int j = 0; j < len; ++j)
+        {
+            const float f0 = L[j], f1 = R[j];
+            pk0 = std::max (pk0, std::abs (f0));
+            const double x0 = f0, x1 = f1;
             if constexpr (Stereo)
             {
-                pk1 = std::max (pk1, std::abs (x1));
-                xy += (double) x0 * x1;
-                xx += (double) x0 * x0;
-                yy += (double) x1 * x1;
-                rect += 0.5 * (std::abs ((double) x0) + std::abs ((double) x1));
+                pk1 = std::max (pk1, std::abs (f1));
+                xy += x0 * x1;
+                xx += x0 * x0;
+                yy += x1 * x1;
+                rect += 0.5 * (std::abs (x0) + std::abs (x1));
             }
             else
             {
-                xx += (double) x0 * x0;
-                rect += std::abs ((double) x0);
+                xx += x0 * x0;
+                rect += std::abs (x0);
             }
-
-            // True peak: the window ends with this pair. The bound is exact, so the interpolation
-            // is skipped only when it cannot change the maximum or the over count.
-            tps.push (ts, x0, x1);
-            const float bound = tps.windowMax (ts);
-            float skipLevel = tpMax;
-            if (trueOvers) skipLevel = std::min (skipLevel, thr);
-            const bool skip = bound * tpKernel.l1 * 1.1f <= skipLevel;
-            float peak = 0.0f;
-            if (! skip)
-            {
-                peak = tps.slotPeak (ts, tpKernel, 0);
-                if constexpr (Stereo) peak = std::max (peak, tps.slotPeak (ts, tpKernel, 1));
-            }
-            tpMax = std::max (tpMax, peak);
-            if (thr > 0.0f)
-            {
-                float v = peak;
-                if (! overTrue)
-                {
-                    v = std::abs (x0);
-                    if constexpr (Stereo) v = std::max (v, std::abs (x1));
-                }
-                if (v > thr) ++overs;
-            }
-
-            // Vectorscope: every kScopeDecimation-th output pair, counted across blocks.
-            if (scopePhase == 0) scopeRing.push (x0, x1);
-            scopePhase = scopePhase + 1 == kScopeDecimation ? 0 : scopePhase + 1;
         }
-
         spMax[0] = pk0;
         spMax[1] = pk1;
-        acc[0] = ee.lane (0);
-        if constexpr (Stereo) acc[1] = ee.lane (1); // mono: the right lane only carries a copy of the left
         accXY = xy;
         accXX = xx;
         accYY = yy;
         vuAcc = rect;
-        tps.setState (ts);
+
+        // Pass 2: over count on samples, true peak where the window bound can matter, scope decimation.
+        const float thr = overThr;
+        if (thr > 0.0f && ! overTrue)
+        {
+            for (int j = 0; j < len; ++j)
+            {
+                float v = std::abs (L[j]);
+                if constexpr (Stereo) v = std::max (v, std::abs (R[j]));
+                if (v > thr) ++overs;
+            }
+        }
+        truePeakPass<Stereo> (len, thr);
+
+        // Vectorscope: every kScopeDecimation-th output pair, counted across blocks.
+        for (int j = (kScopeDecimation - scopePhase) % kScopeDecimation; j < len; j += kScopeDecimation) scopeRing.push (L[j], R[j]);
+        scopePhase = (scopePhase + len) % kScopeDecimation;
+
+        // The last kTpHistory samples are the history of the next chunk.
+        std::memmove (tpBuf[0], tpBuf[0] + len, sizeof (float) * H);
+        std::memmove (tpBuf[1], tpBuf[1] + len, sizeof (float) * H);
+    }
+
+    // Peak of the interpolated signal at window start t: the 4x grid of the slot (t + 7), both channels.
+    template <bool Stereo>
+    float slotPeakAt (int t) const noexcept
+    {
+        float best = 0.0f;
+        for (int c = 0; c < (Stereo ? 2 : 1); ++c)
+        {
+            const float* w = tpBuf[c] + t;
+            float v = std::abs (w[TruePeakKernel::kHalf - 1]);
+            for (int p = 1; p < tpKernel.phases; ++p) v = std::max (v, std::abs (truePeakDot (tpKernel.h[p], w)));
+            best = std::max (best, v);
+        }
+        return best;
+    }
+
+    // Candidate test for the true peak. Every interpolated value of a window is split into its central
+    // kCoreTaps taps (computed) and the remaining taps, which are bounded by Cauchy-Schwarz with the window's
+    // energy: |Y_p| <= |core_p| + sqrt(tailE_p * E). The slot sample is bounded by itself. A window that stays
+    // under the level (the running maximum, or the over threshold) cannot change either; the margins absorb
+    // float rounding. Candidates are interpolated exactly, so the maximum and the over count are exactly those
+    // of evaluating every sample. Four consecutive windows are tested per step.
+    template <bool Stereo>
+    void truePeakPass (int len, float thr) noexcept
+    {
+        constexpr int H = kTpHistory;
+        constexpr int kTail = 4;
+        const int N = H + len;
+        float e[2][H + kControlBlock + 8], u[H + kControlBlock + 8];
+        for (int c = 0; c < (Stereo ? 2 : 1); ++c)
+        {
+            for (int k = 0; k < N; ++k) e[c][k] = tpBuf[c][k] * tpBuf[c][k];
+            // Window sums of length 2, 4, 8, 16 (each step valid where it can reach).
+            for (int k = 0; k + 1 < N; ++k) u[k] = e[c][k] + e[c][k + 1];
+            for (int k = 0; k + 3 < N; ++k) e[c][k] = u[k] + u[k + 2];
+            for (int k = 0; k + 7 < N; ++k) u[k] = e[c][k] + e[c][k + 4];
+            for (int k = 0; k + 15 < N; ++k) e[c][k] = u[k] + u[k + 8];
+        }
+
+        const bool trueOvers = thr > 0.0f && overTrue;
+        const float level = trueOvers ? std::min (tpMax, thr) : tpMax; // the chunk-start level: never above the current one
+        for (int t0 = 0; t0 < len; t0 += kTail)
+        {
+            const unsigned mask = candidateMask<Stereo> (t0, level, e);
+            if (mask == 0) continue;
+            // The group is interpolated exactly, all four windows at once (windows the bound cleared are exact too,
+            // and cannot reach the maximum or the threshold).
+            float peak[kTail];
+            groupPeaks<Stereo> (t0, peak);
+            const int left = std::min (kTail, len - t0);
+            for (int i = 0; i < left; ++i)
+            {
+                tpMax = std::max (tpMax, peak[i]);
+                if (trueOvers && peak[i] > thr) ++overs;
+            }
+        }
+    }
+
+    // Exact peaks of the four interpolated windows starting at t0 (both channels), in the arithmetic order of
+    // truePeakDot, so the result is bit-identical to slotPeakAt.
+    template <bool Stereo>
+    void groupPeaks (int t0, float (&out)[4]) const noexcept
+    {
+#if JUCE_USE_SSE_INTRINSICS
+        constexpr int half = kTpHistory / 2;
+        const __m128 absMask = _mm_castsi128_ps (_mm_set1_epi32 (0x7fffffff));
+        __m128 best = _mm_setzero_ps();
+        for (int c = 0; c < (Stereo ? 2 : 1); ++c)
+        {
+            const float* w = tpBuf[c] + t0;
+            // Window vectors X[j] (lane i = window t0 + i, tap j), loaded once and shared by the phases.
+            __m128 X[TruePeakKernel::kTaps];
+            for (int j = 0; j < TruePeakKernel::kTaps; ++j) X[j] = _mm_loadu_ps (w + j);
+            best = _mm_max_ps (best, _mm_and_ps (X[half], absMask)); // the slot samples
+            for (int p = 1; p < tpKernel.phases; ++p)
+            {
+                __m128 v[4];
+                for (int l = 0; l < 4; ++l)
+                {
+                    // Same order as truePeakDot: lane l sums taps l, l+4, l+8, l+12 in turn; then (v0+v1)+(v2+v3).
+                    __m128 sum = _mm_mul_ps (_mm_loadu_ps (tpBroad[p][l]), X[l]);
+                    sum = _mm_add_ps (sum, _mm_mul_ps (_mm_loadu_ps (tpBroad[p][4 + l]), X[4 + l]));
+                    sum = _mm_add_ps (sum, _mm_mul_ps (_mm_loadu_ps (tpBroad[p][8 + l]), X[8 + l]));
+                    sum = _mm_add_ps (sum, _mm_mul_ps (_mm_loadu_ps (tpBroad[p][12 + l]), X[12 + l]));
+                    v[l] = sum;
+                }
+                const __m128 dot = _mm_add_ps (_mm_add_ps (v[0], v[1]), _mm_add_ps (v[2], v[3]));
+                best = _mm_max_ps (best, _mm_and_ps (dot, absMask));
+            }
+        }
+        _mm_storeu_ps (out, best);
+#else
+        for (int i = 0; i < 4; ++i) out[i] = slotPeakAt<Stereo> (t0 + i);
+#endif
+    }
+
+    static int lowestBit (unsigned m) noexcept
+    {
+        int i = 0;
+        while (((m >> i) & 1u) == 0u) ++i;
+        return i;
+    }
+
+    // Bit i set when the window starting at t0 + i may reach `level` (conservative, see truePeakPass).
+    template <bool Stereo>
+    unsigned candidateMask (int t0, float level, const float (&e)[2][kTpHistory + kControlBlock + 8]) const noexcept
+    {
+        constexpr int half = kTpHistory / 2;
+        unsigned bits = 0;
+        for (int c = 0; c < (Stereo ? 2 : 1); ++c)
+        {
+            const float* w = tpBuf[c] + t0;
+#if JUCE_USE_SSE_INTRINSICS
+            const __m128 lv = _mm_set1_ps (level);
+            const __m128 a6 = _mm_loadu_ps (w + half - 1), a7 = _mm_loadu_ps (w + half), a8 = _mm_loadu_ps (w + half + 1), a9 = _mm_loadu_ps (w + half + 2);
+            const __m128 absMask = _mm_castsi128_ps (_mm_set1_epi32 (0x7fffffff));
+            const __m128 energy = _mm_loadu_ps (e[c] + t0);
+            __m128 hit = _mm_cmpgt_ps (_mm_and_ps (a7, absMask), lv); // the slot itself
+            for (int p = 1; p < tpKernel.phases; ++p)
+            {
+                const __m128 core = _mm_add_ps (_mm_add_ps (_mm_mul_ps (_mm_loadu_ps (tpBroad[p][half - 1]), a6), _mm_mul_ps (_mm_loadu_ps (tpBroad[p][half]), a7)),
+                                                _mm_add_ps (_mm_mul_ps (_mm_loadu_ps (tpBroad[p][half + 1]), a8), _mm_mul_ps (_mm_loadu_ps (tpBroad[p][half + 2]), a9)));
+                const __m128 tail = _mm_sqrt_ps (_mm_mul_ps (_mm_set1_ps (tpTailE[p]), energy));
+                const __m128 bound = _mm_add_ps (_mm_and_ps (core, absMask), _mm_mul_ps (tail, _mm_set1_ps (1.002f)));
+                hit = _mm_or_ps (hit, _mm_cmpgt_ps (bound, lv));
+            }
+            bits |= (unsigned) _mm_movemask_ps (hit);
+#else
+            for (int i = 0; i < 4; ++i)
+            {
+                const float* x = w + i;
+                bool hit = std::abs (x[half]) > level;
+                for (int p = 1; p < tpKernel.phases && ! hit; ++p)
+                {
+                    const float* h = tpKernel.h[p];
+                    const float core = h[half - 1] * x[half - 1] + h[half] * x[half] + h[half + 1] * x[half + 1] + h[half + 2] * x[half + 2];
+                    hit = std::abs (core) + std::sqrt (tpTailE[p] * e[c][t0 + i]) * 1.002f > level;
+                }
+                if (hit) bits |= 1u << i;
+            }
+#endif
+        }
+        return bits;
     }
 
     void controlTick (int nc) noexcept
@@ -524,23 +768,34 @@ private:
         vuDbNow = v > 1.0e-10 ? fastGainToDb ((float) v) : -200.0f;
     }
 
+    // Sum of n values (a multiple of 4), four independent partial sums. Silence sums to exactly zero.
+    static double sumOf (const double* p, int n) noexcept
+    {
+        double s0 = 0.0, s1 = 0.0, s2 = 0.0, s3 = 0.0;
+        for (int i = 0; i < n; i += 4)
+        {
+            s0 += p[i];
+            s1 += p[i + 1];
+            s2 += p[i + 2];
+            s3 += p[i + 3];
+        }
+        return (s0 + s1) + (s2 + s3);
+    }
+
     void endSubBlock() noexcept
     {
         subCount = 0;
         const double e = (acc[0] + acc[1]) / subLen;
         acc[0] = acc[1] = 0.0;
-        subRing[(size_t) subHead] = e;
-        subHead = (subHead + 1) % kShortSubs;
+        // The ring is kept twice, so the newest 300 values are contiguous: [subHead+1, subHead+300] in subRing.
+        const int h = subHead;
+        subRing[(size_t) h] = e;
+        subRing[(size_t) (h + kShortSubs)] = e;
+        subHead = (h + 1) % kShortSubs;
         if (sinceReset < 0x7fffffffu) ++sinceReset;
 
-        double sumM = 0.0, sumS = 0.0;
-        for (int k = 1; k <= kShortSubs; ++k)
-        {
-            const double v = subRing[(size_t) ((subHead - k + kShortSubs) % kShortSubs)];
-            sumS += v;
-            if (k <= kMomentarySubs) sumM += v;
-        }
-        const double eM = sumM / kMomentarySubs, eS = sumS / kShortSubs;
+        const double eS = sumOf (&subRing[(size_t) (h + 1)], kShortSubs) / kShortSubs;
+        const double eM = sumOf (&subRing[(size_t) (h + kShortSubs + 1 - kMomentarySubs)], kMomentarySubs) / kMomentarySubs;
         momentary = energyToLufs (eM);
         shortTerm = energyToLufs (eS);
 
@@ -613,12 +868,14 @@ private:
     int subLen = 480, grBinLen = 480;
     TruePeakKernel tpKernel;
     BiquadD kwProto[2];
-    BiquadPair kw[2]; // K-weighting stages 1 and 2, both channels
-    TruePeakStereo tps;
+    KStage kw[2]; // K-weighting stages 1 and 2, both channels
+    float tpBuf[2][kTpHistory + kControlBlock] {}; // true-peak history (first kTpHistory) and the current chunk
+    float tpMax = 0.0f, tpTailE[TruePeakKernel::kMaxPhases] {};
+    float tpBroad[TruePeakKernel::kMaxPhases][TruePeakKernel::kTaps][4] {}; // kernel taps broadcast for the SIMD interpolation
     VuBallistics vu;
 
     // Windows.
-    std::array<double, kShortSubs> subRing {};
+    std::array<double, 2 * kShortSubs> subRing {}; // each sub-block energy stored twice, see endSubBlock()
     int subHead = 0, subCount = 0, hopPhase = 0, ctrlCount = 0;
     uint32_t sinceReset = 0; // sub-blocks since the integration was (re)started
     double acc[2] {};
@@ -629,7 +886,7 @@ private:
     // Current values.
     double momentary = -200.0, shortTerm = -200.0, integrated = -200.0;
     double maxMomentary = -200.0, maxShortTerm = -200.0, lra = 0.0, lraLow = -200.0, lraHigh = -200.0;
-    float tpMax = 0.0f, spMax[2] {};
+    float spMax[2] {};
     float correlationNow = 0.0f, vuDbNow = -200.0f;
     uint32_t overs = 0;
     float overThr = 0.0f;
@@ -642,7 +899,7 @@ private:
 
     // Gain-reduction history.
     std::array<std::atomic<float>, kGrHistoryPoints> grRing {};
-    std::atomic<uint32_t> grHead { 0 };
+    std::atomic<uint64_t> grHead { 0 }; // points pushed since reset
     int grBinCount = 0;
     float grBinMin = 0.0f;
 
