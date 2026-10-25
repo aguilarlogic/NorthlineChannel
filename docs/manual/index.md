@@ -2,7 +2,7 @@
 
 Northline Channel is a channel strip plug-in. It has five processing modules, a master
 section with a limiter and loudness metering, presets, and a few tools for comparing and
-matching your mix. This manual describes version 1.0.0-beta. Changes are listed in
+matching your mix. This manual describes version 1.0.0. Changes are listed in
 [CHANGELOG.md](../../CHANGELOG.md).
 
 ## Chapters

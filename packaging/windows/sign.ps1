@@ -6,7 +6,7 @@
 #   2. OV/EV certificate on a hardware token or in the cert store: set NL_SIGN_MODE=cert and
 #      NL_CERT_SHA1 (thumbprint of the certificate in the user/machine store).
 #
-# Usage: ./sign.ps1 -Paths "build\...\Northline Channel.vst3\Contents\x86_64-win\Northline Channel.vst3", "dist\NorthlineChannel-0.9.1-win-x64.exe"
+# Usage: ./sign.ps1 -Paths "build\...\Northline Channel.vst3\Contents\x86_64-win\Northline Channel.vst3", "dist\NorthlineChannel-1.0.0-win-x64.exe"
 
 param(
     [Parameter(Mandatory = $true)] [string[]] $Paths,

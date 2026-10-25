@@ -58,6 +58,35 @@ jobs:
             pluginval-logs/
           if-no-files-found: warn
 
+  windows-clap:
+    # Optional format: builds the CLAP plug-in through free-audio/clap-juce-extensions. Non-blocking.
+    name: Windows CLAP (MSVC, x64)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch JUCE and the CLAP extensions
+        shell: bash
+        run: |
+          git clone --depth 1 --branch "$JUCE_TAG" https://github.com/juce-framework/JUCE external/JUCE
+          git clone --depth 1 --recursive https://github.com/free-audio/clap-juce-extensions external/clap-juce-extensions
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -A x64 -DNL_BUILD_CLAP=ON
+
+      - name: Build CLAP
+        shell: bash
+        run: cmake --build build --config Release --parallel --target NorthlineChannel_CLAP
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-clap
+          path: build/NorthlineChannel_artefacts/Release/CLAP/
+          if-no-files-found: warn
+
   macos:
     # Not verified on macOS yet: a failure here must not block the pipeline.
     name: macOS (Xcode, VST3 + AU)

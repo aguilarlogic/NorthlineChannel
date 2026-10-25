@@ -43,7 +43,7 @@ DIST="$WORK/distribution.xml"
     echo '<?xml version="1.0" encoding="utf-8"?>'
     echo '<installer-gui-script minSpecVersion="2">'
     echo "  <title>Northline Channel $VERSION</title>"
-    echo '  <license file="EULA.txt"/>'
+    echo '  <license file="LICENSE.txt"/>'
     echo '  <options customize="always" require-scripts="false" hostArchitectures="arm64,x86_64"/>'
     echo '  <choices-outline>'
     for c in "${components[@]}"; do echo "    <line choice=\"$c\"/>"; done
@@ -56,7 +56,7 @@ DIST="$WORK/distribution.xml"
 } > "$DIST"
 
 mkdir -p "$WORK/resources"
-cp docs/legal/EULA.txt "$WORK/resources/EULA.txt"
+cp LICENSE "$WORK/resources/LICENSE.txt"
 PKG="$OUT/NorthlineChannel-$VERSION-mac.pkg"
 productbuild --distribution "$DIST" --package-path "$WORK" --resources "$WORK/resources" \
              --sign "$NL_DEV_ID_INSTALLER" "$PKG"

@@ -59,6 +59,13 @@ cmake -S . -B build -G "Visual Studio 18 2026" -A x64
 cmake --build build --config Release --target NorthlineChannel_VST3 NorthlineChannel_Standalone NorthlineTool -- -m
 ```
 
+The Inter font in `Resources/fonts` is embedded automatically. For the optional CLAP build, clone the
+CLAP extensions before you configure, and build the `NorthlineChannel_CLAP` target:
+
+```
+git clone --recursive https://github.com/free-audio/clap-juce-extensions external/clap-juce-extensions
+```
+
 On macOS, use `cmake -S . -B build -G Xcode` and build the `NorthlineChannel_VST3` and
 `NorthlineChannel_AU` targets. The VST3 bundle is in
 `build/NorthlineChannel_artefacts/Release/VST3/Northline Channel.vst3`.
@@ -77,12 +84,17 @@ NorthlineTool measure <suite|all|list> [--out dir] [--quick]   # measurement rep
 NorthlineTool bench [--quick]                     # CPU benchmark of this plug-in
 NorthlineTool host-bench <file.vst3> [filter] [--quick]        # benchmark another VST3 the same way
 NorthlineTool snapshot <out.png> [preset] [browser|smart|hub|settings]   # render the editor to a PNG
+NorthlineTool validate [file.vst3] [--quick] [--seed N]   # pluginval-style checks, in process or on a VST3
 ```
 
-- `test` runs about 185 tests. A filter selects the tests whose names contain it.
+- `test` runs about 210 tests. A filter selects the tests whose names contain it.
 - `measure` writes the reports in `docs/measurements`. See the [index](docs/measurements/README.md).
 - `snapshot` renders the editor with a factory preset (`-1` turns every module on) and an optional
   overlay open. The screenshots in the manual come from it.
+- `validate` checks the editor, every rate, block size and layout, fuzzed parameters, silence, state,
+  latency, bypass, Compare, threads, counter wrap-around and audio-thread allocations. It also runs on the
+  built VST3 through JUCE's hosting. [pluginval](https://github.com/Tracktion/pluginval) is the
+  independent check: `pluginval --strictness-level 10 --validate "Northline Channel.vst3"`.
 
 ## Repository layout
 
@@ -102,7 +114,9 @@ NorthlineTool snapshot <out.png> [preset] [browser|smart|hub|settings]   # rende
 
 ## Licence
 
-- Plug-in licence: [TBD]
-- End-user licence agreement: [TBD], draft at `docs/legal/EULA.txt`
-- Privacy policy: [TBD], draft at `docs/legal/PRIVACY.md`
-- JUCE: used under the JUCE licence. Check its current terms before you sell the plug-in.
+Northline Channel is free software under the [GNU Affero General Public License v3](LICENSE). It is built
+on JUCE, used under JUCE's AGPLv3 option, so anything you distribute that is built from this code must
+also be AGPLv3 with its source available. The VST3 SDK, CLAP and the CLAP extensions are MIT, and the
+Inter font is SIL OFL 1.1. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The plug-in has no network access and collects nothing. See [docs/legal/PRIVACY.md](docs/legal/PRIVACY.md).

@@ -51,11 +51,12 @@ How a Northline Channel release is built, validated, signed and published. Autom
 
 ## Licensing, privacy, legal
 
-- Licensing (roadmap 11.4) is not implemented yet: choose Moonbase (JUCE SDK, offline activation)
-  or self-hosted Ed25519-signed licence files. An expired trial must pass audio through
-  unprocessed and show a banner; it must never inject noise or corrupt sessions.
-- No telemetry. Crash reporting, if added, is opt-in.
-- `docs/legal/EULA.txt` and `docs/legal/PRIVACY.md` are drafts and need review by a lawyer
-  before the first public release.
-- Before launch: trademark search for "Northline" (USPTO, EUIPO), register the domain and replace
-  `COMPANY_WEBSITE` in CMakeLists.txt, and budget the JUCE licence tier that matches revenue.
+- Northline Channel is open source under the GNU AGPLv3 (`LICENSE`), as JUCE's free licence requires.
+  There is no licence key, activation or trial. Third-party licences are listed in
+  `THIRD_PARTY_NOTICES.md`, and the installers ship both files.
+- No network access, telemetry or crash reporting (`docs/legal/PRIVACY.md`).
+- Signing and notarization are optional. The release workflow skips them when the secrets are not
+  set; unsigned Windows installers show a SmartScreen warning, and unsigned macOS packages must be
+  opened with right-click > Open (or allowed in System Settings > Privacy & Security).
+- A closed-source or commercial release would need a commercial JUCE licence, a trademark search for
+  "Northline", and an EULA.

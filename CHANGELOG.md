@@ -8,7 +8,7 @@ including the merge commits).
 Status tags on the defects: **fixed** means the change and a named test were both found. **Fixed in code**
 means the change was found but no named acceptance test was. **Partial** means part of the defect is still open.
 
-## 1.0.0-beta (unreleased)
+## 1.0.0 (unreleased)
 
 ### Added
 
@@ -80,12 +80,14 @@ means the change was found but no named acceptance test was. **Partial** means p
   silence, state, latency, bypass, Compare, threads and audio-thread allocations), in process or on a built
   VST3 through JUCE hosting. CI runs it, and runs pluginval when it is available.
 - An AddressSanitizer build of the test tool (`-DNL_ASAN=ON`).
+- Open source under the GNU AGPLv3 (`LICENSE`), with third-party notices in `THIRD_PARTY_NOTICES.md`. The Inter
+  font files (SIL OFL 1.1) are in `Resources/fonts`.
 - 212 tests and five measurement suites (`pre`, `dynamics`, `eq`, `master` and `engine`), plus a benchmark and a
   snapshot command.
 
 ### Changed
 
-- The parameter table is version 2. Parameter IDs are frozen from this beta.
+- The parameter table is version 2. Parameter IDs are frozen from this release.
 - Level Match v2 replaces the unweighted 1.5 s automatic gain control that was printed into the render (D1).
 - Latency is the sum of the module latencies, which depend on the quality setting and the gate, de-esser and
   compressor lookahead, plus the limiter latency. Switching the limiter or a module on or off does not change it (D2).
@@ -166,7 +168,7 @@ Other fixes:
 
 ### Known issues
 
-These are open in this beta. Several are also listed in the manual's troubleshooting chapter.
+These are open in this release. Several are also listed in the manual's troubleshooting chapter.
 
 - Some parameters have no editor control, so the host must set them: input swap, global mix, Weight Track HP,
   the gate, de-esser and compressor lookaheads, the de-esser attack, the de-esser band mode (Split or Wide), EQ band
@@ -181,4 +183,3 @@ These are open in this beta. Several are also listed in the manual's troubleshoo
 - The monitor's Mono and Side use a gain of 0.5, so a centred source keeps its level when you switch from
   Stereo to Mono. The engine's internal mid/side matrix uses 0.707 (power-preserving). This is deliberate (D11).
 - Screen reader behaviour has not been recorded.
-- The project version in `CMakeLists.txt` is 0.9.1. This entry is 1.0.0-beta.

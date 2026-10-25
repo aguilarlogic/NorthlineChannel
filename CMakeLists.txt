@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.25)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures")
 
-project(NorthlineChannel VERSION 0.9.1 LANGUAGES C CXX)
+project(NorthlineChannel VERSION 1.0.0 LANGUAGES C CXX)
 
 # CLAP through free-audio/clap-juce-extensions (JUCE 9.0.3 has no CLAP client of its own).
 # Enabled automatically when the checkout exists:
@@ -43,7 +43,7 @@ set(NL_DEFINITIONS
 
 juce_add_plugin(NorthlineChannel
     COMPANY_NAME "Northline Audio"
-    COMPANY_WEBSITE "https://example.com" # TODO(release): the real domain once registered (roadmap 11.6)
+    COMPANY_WEBSITE "https://github.com/aguilarlogic/NorthlineChannel"
     BUNDLE_ID com.northlineaudio.channel
     PLUGIN_MANUFACTURER_CODE Nrth
     PLUGIN_CODE Nlch

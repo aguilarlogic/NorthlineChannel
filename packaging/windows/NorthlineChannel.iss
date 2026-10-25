@@ -1,9 +1,9 @@
 ; Inno Setup script for the Windows installer (Inno Setup 6.3+).
-; Build:  iscc /DAppVersion=0.9.1 /DArch=x64 /DArtefacts=..\..\build\NorthlineChannel_artefacts\Release packaging\windows\NorthlineChannel.iss
+; Build:  iscc /DAppVersion=1.0.0 /DArch=x64 /DArtefacts=..\..\build\NorthlineChannel_artefacts\Release packaging\windows\NorthlineChannel.iss
 ; Arch is x64 or arm64. Sign the plugin binaries before packaging (sign.ps1), then sign the installer.
 
 #ifndef AppVersion
-  #define AppVersion "0.9.1"
+  #define AppVersion "1.0.0"
 #endif
 #ifndef Arch
   #define Arch "x64"
@@ -20,7 +20,7 @@ AppPublisher=Northline Audio
 DefaultDirName={autopf}\Northline Audio\Northline Channel
 DefaultGroupName=Northline Audio
 DisableProgramGroupPage=yes
-LicenseFile=..\..\docs\legal\EULA.txt
+LicenseFile=..\..\LICENSE
 OutputDir=..\..\dist
 OutputBaseFilename=NorthlineChannel-{#AppVersion}-win-{#Arch}
 Compression=lzma2/max
@@ -53,7 +53,8 @@ Source: "{#Artefacts}\VST3\Northline Channel.vst3\*"; DestDir: "{commoncf64}\VST
 Source: "{#Artefacts}\CLAP\Northline Channel.clap"; DestDir: "{commoncf64}\CLAP"; Components: clap; Flags: ignoreversion
 #endif
 Source: "{#Artefacts}\Standalone\Northline Channel.exe"; DestDir: "{app}"; Components: standalone; Flags: ignoreversion
-Source: "..\..\docs\legal\EULA.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Northline Channel"; Filename: "{app}\Northline Channel.exe"; Components: standalone
