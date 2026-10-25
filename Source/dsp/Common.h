@@ -108,10 +108,29 @@ struct Smoothed
 // deterministic across block sizes. The phase is unsigned and wraps safely.
 struct ControlClock
 {
-    uint32_t phase = 0; // samples since the last tick, 0 .. kControlBlock-1
+    uint32_t phase = 0;   // samples since the last tick, 0 .. kControlBlock-1
+    uint32_t samples = 0; // samples since reset, modulo 2^32 (the phase is this count modulo kControlBlock)
 
-    void reset() noexcept { phase = 0; }
-    void advance (int n) noexcept { phase = (phase + (uint32_t) n) % (uint32_t) kControlBlock; }
+    void reset() noexcept
+    {
+        phase = 0;
+        samples = 0;
+    }
+
+    void advance (int n) noexcept
+    {
+        phase = (phase + (uint32_t) n) % (uint32_t) kControlBlock;
+        samples += (uint32_t) n; // wraps at 2^32, where the phase is unchanged (2^32 is a multiple of kControlBlock)
+    }
+
+#if NL_TOOL_BUILD
+    // Test seam (tool build only): starts the clock at an absolute sample count, for the wrap-around tests.
+    void seedForTest (uint32_t count) noexcept
+    {
+        samples = count;
+        phase = count % (uint32_t) kControlBlock;
+    }
+#endif
 };
 
 // Smoothed gain applied with a deterministic ramp: the smoother ticks exactly at control

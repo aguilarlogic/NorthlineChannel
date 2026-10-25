@@ -66,6 +66,18 @@ void ChannelStrip::prepare (double sampleRate, int maxBlockSize, int numChannels
     for (auto& d : deltaW) d.prepare (fs, 20.0f);
     cmpOutGain.prepare (fs, 20.0f);
     learnAlpha = timeCoef (300.0f, fs);
+    {
+        // One segment of the learners: energy E' = d E + sum_k w_k s_k, w_k = (1 - a) a^(kControlBlock - 1 - k).
+        const double a = learnAlpha, b = 1.0 - a;
+        double w = b;
+        for (int k = kControlBlock - 1; k >= 0; --k)
+        {
+            learnWeight[(size_t) k] = (float) w;
+            w *= a;
+        }
+        learnSegDecay = (float) std::pow (a, (double) kControlBlock);
+    }
+    frameDemand.prepare (fs);
 
     const int maxLat = maxModuleLatency (fs);
     for (int m = 0; m < numModules; ++m)
@@ -184,6 +196,7 @@ ChannelStrip::Order ChannelStrip::getOrder() const noexcept { return unpackOrder
 //==============================================================================
 size_t ChannelStrip::popMeterFrames (MeterFrame* out, size_t maxCount, bool* wasReset) noexcept
 {
+    frameDemand.touch();
     if (wasReset != nullptr) *wasReset = false;
     if (maxCount == 0) return 0;
     const auto generation = ringGeneration.load (std::memory_order_acquire);
@@ -579,26 +592,38 @@ bool ChannelStrip::getDelta (int moduleId) const noexcept
 
 // Smoothed energies of a wet and a dry signal (a module, or the whole strip). The learned wet/dry level
 // ratio is refreshed on control ticks only, so it does not depend on the host block size. It is clamped to +/-12 dB.
+// The energies advance once per control segment (kControlBlock samples on the absolute grid): each sample is
+// stored in its segment, and when the segment completes the smoothed energies advance by its weighted sum,
+// summed in a fixed order. The learned level is taken from the energies at each segment start. So the result
+// does not depend on how the host splits the segment into blocks. Samples the learner did not see (the module was
+// fading) contribute nothing.
 void ChannelStrip::learnLevel (ModuleLearn& l, const float* const* wet, const float* const* dry, int numCh, int n, uint32_t phase) const noexcept
 {
-    float ew = l.ew, ed = l.ed, g = l.gainLin;
-    const float a = learnAlpha, b = 1.0f - a;
     for (int i = 0; i < n; ++i)
     {
-        if (ew > 1.0e-10f && ed > 1.0e-10f && ((phase + (uint32_t) i) % (uint32_t) kControlBlock) == 0)
-            g = std::clamp (std::sqrt (ew / ed), 0.25f, 4.0f);
+        const int p = (int) ((phase + (uint32_t) i) % (uint32_t) kControlBlock);
+        if (p == 0 && l.ew > 1.0e-10f && l.ed > 1.0e-10f) l.gainLin = std::clamp (std::sqrt (l.ew / l.ed), 0.25f, 4.0f);
         float sw = 0.0f, sd = 0.0f;
         for (int c = 0; c < numCh; ++c)
         {
             sw += wet[c][i] * wet[c][i];
             sd += dry[c][i] * dry[c][i];
         }
-        ew = a * ew + b * sw;
-        ed = a * ed + b * sd;
+        l.segW[p] = sw;
+        l.segD[p] = sd;
+        if (p == kControlBlock - 1)
+        {
+            float wsum = 0.0f, dsum = 0.0f;
+            for (int k = 0; k < kControlBlock; ++k)
+            {
+                wsum += learnWeight[(size_t) k] * l.segW[k];
+                dsum += learnWeight[(size_t) k] * l.segD[k];
+                l.segW[k] = l.segD[k] = 0.0f;
+            }
+            l.ew = learnSegDecay * l.ew + wsum;
+            l.ed = learnSegDecay * l.ed + dsum;
+        }
     }
-    l.ew = ew;
-    l.ed = ed;
-    l.gainLin = g;
 }
 
 // Delta output: the module's output minus its latency-aligned input, crossfaded in and out.
@@ -656,7 +681,9 @@ void ChannelStrip::applyModuleCompare (float* const* io, int numCh, int n, uint3
 void ChannelStrip::process (float* const* io, int numChannels, int n, const float* const* sidechain, int sidechainChannels)
 {
     jassert (n <= maxBlock);
-    const auto tStart = juce::Time::getHighResolutionTicks();
+    // Timings are taken only while the meter frames are read (see frameDemand).
+    const bool timing = frameDemand.activeFor (n);
+    const juce::int64 tStart = timing ? juce::Time::getHighResolutionTicks() : 0;
     numChannels = juce::jlimit (1, 2, numChannels);
     advanceQualityFade();
     updateParams (false);
@@ -783,7 +810,7 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             holdoff[(size_t) id] = lat; // the module's first `lat` output samples are not yet valid
         }
 
-        const auto t0 = juce::Time::getHighResolutionTicks();
+        const juce::int64 t0 = timing ? juce::Time::getHighResolutionTicks() : 0;
         const bool wantMs = moduleWantsMs (id);
         if (wantMs != inMs && numChannels == 2) { lrToMs (io[0], io[1], n); inMs = wantMs; }
 
@@ -856,13 +883,16 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
             else if (id == modPre) tapMono (AnalyserTap::preOut, outPtr, numChannels, n, inMs);
         }
 
-        const float us = (float) ((double) (juce::Time::getHighResolutionTicks() - t0) * ticksToUs);
-        moduleUsSmoothed[(size_t) id] = 0.9f * moduleUsSmoothed[(size_t) id] + 0.1f * us;
+        if (timing)
+        {
+            const float us = (float) ((double) (juce::Time::getHighResolutionTicks() - t0) * ticksToUs);
+            moduleUsSmoothed[(size_t) id] = 0.9f * moduleUsSmoothed[(size_t) id] + 0.1f * us;
+        }
     }
     if (inMs) lrToMs (io[0], io[1], n);
 
     // After the chain: level match -> global mix -> output gain -> master -> monitor.
-    const auto tMaster = juce::Time::getHighResolutionTicks();
+    const juce::int64 tMaster = timing ? juce::Time::getHighResolutionTicks() : 0;
     if (matchActive) matchStage (io, numChannels, n);
     if (mixActive) mixStage (io, numChannels, n);
     if (! outGain.isUnity()) outGain.apply (io, numChannels, n, clock.phase);
@@ -906,8 +936,12 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
         samples.push (sampleScratch.data(), (size_t) n);
     }
 
-    const auto tEnd = juce::Time::getHighResolutionTicks();
-    moduleUsSmoothed[5] = 0.9f * moduleUsSmoothed[5] + 0.1f * (float) ((double) (tEnd - tMaster) * ticksToUs);
+    if (timing)
+    {
+        const juce::int64 tEnd = juce::Time::getHighResolutionTicks();
+        moduleUsSmoothed[5] = 0.9f * moduleUsSmoothed[5] + 0.1f * (float) ((double) (tEnd - tMaster) * ticksToUs);
+        frame.totalUs = (float) ((double) (tEnd - tStart) * ticksToUs);
+    }
 
     frame.gateGr = moduleFade[modGate].isSilent() ? 0.0f : gate.getGainReductionDb();
     frame.ds1Gr = moduleFade[modDs].isSilent() ? 0.0f : ds.getGainReductionDb (0);
@@ -919,7 +953,6 @@ void ChannelStrip::process (float* const* io, int numChannels, int n, const floa
     frame.compKeyDb = comp.getKeyLevelDb();
     for (int b = 0; b < 4; ++b) frame.eqDynGainDb[b] = moduleFade[modEq].isSilent() ? 0.0f : eq.getDynGainDb (b);
     for (int m = 0; m < 6; ++m) frame.moduleUs[m] = moduleUsSmoothed[(size_t) m];
-    frame.totalUs = (float) ((double) (tEnd - tStart) * ticksToUs);
     // Read-only copies for the Instance Hub.
     float eqMax = 0.0f;
     for (int b = 0; b < 4; ++b) eqMax = std::max (eqMax, std::abs (frame.eqDynGainDb[b]));

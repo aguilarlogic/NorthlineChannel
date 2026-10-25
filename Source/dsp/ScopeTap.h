@@ -39,6 +39,7 @@ public:
         hop = (uint64_t) juce::jmax (1L, std::lround (sampleRate * kPeriodSec));
         pos = 0;
         closeAt = hop - 1;
+        gridStale = false;
         peakIn = peakOut = 0.0f;
         grMin = 0.0f;
         keyMax = -120.0f;
@@ -54,6 +55,14 @@ public:
         {
             skip (n);
             return;
+        }
+        if (gridStale) // the grid was advanced while idle: re-align the open cell now
+        {
+            closeAt = nextCloseAt (pos);
+            peakIn = peakOut = 0.0f;
+            grMin = 0.0f;
+            keyMax = -120.0f;
+            gridStale = false;
         }
         grMin = std::min (grMin, gainReductionDb);
         keyMax = std::max (keyMax, keyDb);
@@ -119,10 +128,7 @@ public:
     void skip (int n) noexcept
     {
         pos += (uint64_t) n;
-        closeAt = nextCloseAt (pos);
-        peakIn = peakOut = 0.0f;
-        grMin = 0.0f;
-        keyMax = -120.0f;
+        gridStale = true; // the next measured block re-aligns the cell (same result, no work while idle)
     }
 
     // Number of samples per grid cell at the prepared rate (0 before prepare()).
@@ -145,5 +151,6 @@ private:
     uint32_t seenGeneration = 0; // consumer side
     uint64_t hop = 240, pos = 0, closeAt = 239;
     float peakIn = 0.0f, peakOut = 0.0f, grMin = 0.0f, keyMax = -120.0f;
+    bool gridStale = false; // audio thread: set by skip(), cleared by the next measured block
 };
 } // namespace nl

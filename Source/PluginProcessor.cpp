@@ -235,6 +235,7 @@ void NorthlineProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     preparedBlock = std::max (16, samplesPerBlock);
     for (auto& v : scCopy) v.assign ((size_t) preparedBlock, 0.0f);
     strip.prepare (sampleRate, preparedBlock, numCh);
+    cpuDemand.prepare (sampleRate);
     smartStart.prepare (sampleRate); // Smart Start capture buffer (allocated here, never on the audio thread)
     bypassLine.prepare (2, ChannelStrip::maxModuleLatency (sampleRate) * (numModules + 1));
     setLatencySamples (strip.getLatencySamples());
@@ -294,7 +295,8 @@ void NorthlineProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                 strip.meterHub().setTransportPlaying (position->getIsPlaying());
 
     // Process in chunks no larger than the prepared block size.
-    const auto cpuStart = juce::Time::getHighResolutionTicks();
+    const bool timing = cpuDemand.activeFor (n); // block timing only while the Instance Hub reads it
+    const juce::int64 cpuStart = timing ? juce::Time::getHighResolutionTicks() : 0;
     int pos = 0;
     while (pos < n)
     {
@@ -321,9 +323,12 @@ void NorthlineProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     }
 
     // Instance Hub: smoothed share of the block duration spent in the plug-in.
-    const double busyUs = (double) (juce::Time::getHighResolutionTicks() - cpuStart) * 1.0e6 / juce::Time::getHighResolutionTicksPerSecond();
-    const double blockUs = n * 1.0e6 / juce::jmax (1.0, getSampleRate());
-    cpuPercent.store (0.9f * cpuPercent.load (std::memory_order_relaxed) + 0.1f * (float) (100.0 * busyUs / blockUs), std::memory_order_relaxed);
+    if (timing)
+    {
+        const double busyUs = (double) (juce::Time::getHighResolutionTicks() - cpuStart) * 1.0e6 / juce::Time::getHighResolutionTicksPerSecond();
+        const double blockUs = n * 1.0e6 / juce::jmax (1.0, getSampleRate());
+        cpuPercent.store (0.9f * cpuPercent.load (std::memory_order_relaxed) + 0.1f * (float) (100.0 * busyUs / blockUs), std::memory_order_relaxed);
+    }
 }
 
 //==============================================================================
