@@ -171,7 +171,7 @@ NL_TEST (presets_factoryRoundTripsThroughSaveAndLoad)
     testFolder().createDirectory();
     const auto file = testFolder().getChildFile ("roundtrip.nlpreset");
     const auto& list = factoryPresets();
-    int failures = 0;
+    int mismatches = 0;
     juce::String firstFailure;
     for (int i = 0; i < (int) list.size(); ++i)
     {
@@ -182,18 +182,18 @@ NL_TEST (presets_factoryRoundTripsThroughSaveAndLoad)
         meta.category = list[(size_t) i].category;
         meta.tags = list[(size_t) i].tags;
         meta.note = list[(size_t) i].note;
-        if (! a->saveUserPreset (file, list[(size_t) i].name, meta)) { ++failures; continue; }
+        if (! a->saveUserPreset (file, list[(size_t) i].name, meta)) { ++mismatches; continue; }
 
         auto b = makeProc();
         b->loadUserPreset (file);
         juce::String diff;
         if (! sameSnapshot (before, b->makeSnapshot(), diff))
         {
-            if (failures++ == 0) firstFailure = list[(size_t) i].name + ": " + diff;
+            if (mismatches++ == 0) firstFailure = list[(size_t) i].name + ": " + diff;
         }
     }
     file.deleteFile();
-    check (failures == 0, "every factory preset loads and round-trips through save and load exactly", firstFailure);
+    check (mismatches == 0, "every factory preset loads and round-trips through save and load exactly", firstFailure);
 }
 
 NL_TEST (presets_everyFactoryPresetIsLevelHonestAndHasHeadroom)

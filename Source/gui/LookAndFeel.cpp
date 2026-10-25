@@ -129,8 +129,8 @@ namespace
 juce::Typeface::Ptr interFace (bool bold)
 {
 #if NL_INTER_EMBEDDED
-    static const juce::Typeface::Ptr regular = juce::Typeface::createSystemTypefaceFor (NorthlineFonts::Inter_Regular_ttf, NorthlineFonts::Inter_Regular_ttfSize);
-    static const juce::Typeface::Ptr boldFace = juce::Typeface::createSystemTypefaceFor (NorthlineFonts::Inter_Bold_ttf, NorthlineFonts::Inter_Bold_ttfSize);
+    static const juce::Typeface::Ptr regular = juce::Typeface::createSystemTypefaceFor (NorthlineFonts::InterRegular_ttf, NorthlineFonts::InterRegular_ttfSize);
+    static const juce::Typeface::Ptr boldFace = juce::Typeface::createSystemTypefaceFor (NorthlineFonts::InterBold_ttf, NorthlineFonts::InterBold_ttfSize);
     return bold ? boldFace : regular;
 #else
     juce::ignoreUnused (bold);
