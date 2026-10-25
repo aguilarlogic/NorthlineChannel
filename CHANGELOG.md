@@ -80,7 +80,7 @@ means the change was found but no named acceptance test was. **Partial** means p
   silence, state, latency, bypass, Compare, threads and audio-thread allocations), in process or on a built
   VST3 through JUCE hosting. CI runs it, and runs pluginval when it is available.
 - An AddressSanitizer build of the test tool (`-DNL_ASAN=ON`).
-- 206 tests and five measurement suites (`pre`, `dynamics`, `eq`, `master` and `engine`), plus a benchmark and a
+- 212 tests and five measurement suites (`pre`, `dynamics`, `eq`, `master` and `engine`), plus a benchmark and a
   snapshot command.
 
 ### Changed
@@ -103,7 +103,9 @@ means the change was found but no named acceptance test was. **Partial** means p
 - Whole-strip Compare is loudness-matched without Level Match. The strip learns the level of its output
   against the bypass path while Compare is off and holds it while Compare is on.
 - The EQ Q knob is dimmed, with a tooltip, on band types that ignore Q.
-- The scopes skip their work when no view reads them.
+- The scopes, the per-module timers and the Compare level learners skip their work when nothing reads them.
+- CPU: PRE folds its symmetric oversampling filters and runs the Mix twin only below 100 % (HQ PRE 24 µs to
+  14 µs per 64-sample block), and MeterHub costs about 25 % less with identical readings.
 - Source layout: DSP in `Source/dsp`, the editor in `Source/gui`, Smart Start in `Source/smart`, and the Instance
   Hub in `Source/hub`.
 
@@ -127,8 +129,9 @@ Audit defects from `docs/ROADMAP.md` section 6:
   across several block sizes and a whole-file offline pass. The ThreadSanitizer check in the roadmap is not in the repository.
 - **D7 State races (fixed in code).** Non-parameter state is guarded by a `stateLock` that the audio thread never
   takes. The metering rings are allocated once. The ThreadSanitizer run in the roadmap is not in the repository.
-- **D8 Counters (fixed in code).** Signed sample counters are replaced by a `uint32` control phase. No test seeds
-  the counter near 2³¹.
+- **D8 Counters (fixed).** Signed sample counters are replaced by a `uint32` control phase. Tool-only seams start
+  the control clock and the meter and update counters just below 2³¹ and 2³², and `TestWrap.cpp` and the
+  validator's long-run checks require output identical to an unseeded run across the wrap.
 - **D9 Compressor timing (fixed).** The hidden FET and OPT scaling is removed. The dynamics report measures attack
   against the knob to the ±10 % spec.
 - **D10 Discrete switches (fixed in code).** Type and target changes cross-fade through a shadow instance over 15 ms.
@@ -173,10 +176,9 @@ These are open in this beta. Several are also listed in the manual's troubleshoo
   report measures 1.89 dBTP for Safety Clip HQ and 1.75 dBTP for Brickwall. Use True Peak when the true-peak
   ceiling matters.
 - Switching between Eco and HQ changes the reported latency. The output dips for about 30 ms while it does.
-- PRE at HQ with every control on uses about 2.5 % CPU in the PRE report.
+- CPU is over the roadmap budgets in every configuration: 0.13 % default, 0.72 % Vocal, 1.08 % everything on Eco
+  and 1.89 % everything on HQ, at 48 kHz with 64-sample blocks. See `docs/measurements/cpu.md`.
 - The monitor's Mono and Side use a gain of 0.5, so a centred source keeps its level when you switch from
   Stereo to Mono. The engine's internal mid/side matrix uses 0.707 (power-preserving). This is deliberate (D11).
-- No test seeds the sample counter near 2³¹ (D8).
 - Screen reader behaviour has not been recorded.
-- `docs/measurements/engine.md` predates the PRE HQ latency and the determinism fix. Regenerate it before you use its figures.
 - The project version in `CMakeLists.txt` is 0.9.1. This entry is 1.0.0-beta.

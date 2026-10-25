@@ -2,7 +2,7 @@
 
 COMP, GATE and DE-ESS: static curves, honest timing, auto make-up, chatter, lookahead, band isolation, CPU
 
-Build: Oct 23 2026, AMD Ryzen 7 9800X3D 8-Core Processor
+Build: Oct 24 2026, AMD Ryzen 7 9800X3D 8-Core Processor
 
 ## COMP
 
@@ -100,9 +100,9 @@ Spec grid: ratio 1.5-10, threshold -40..-10 dB (spec: within 1 LU). The held-out
 | Configuration | % of one core |
 |---|---|
 | VCA | 0.14 |
-| FET | 0.21 |
-| OPT | 0.19 |
-| SOFT | 0.20 |
+| FET | 0.19 |
+| OPT | 0.17 |
+| SOFT | 0.17 |
 
 
 ## GATE
@@ -147,9 +147,9 @@ A click and 60 Hz body opening a closed gate. Spec: at most 0.5 dB with 2 ms loo
 
 | Type | % of one core |
 |---|---|
-| Gate | 0.08 |
+| Gate | 0.07 |
 | Expander | 0.08 |
-| Duck | 0.10 |
+| Duck | 0.09 |
 
 
 ## DE-ESS
@@ -189,8 +189,8 @@ Spec (Split mode): change outside the band within 0.3 dB at matched gain reducti
 
 | Configuration | % of one core |
 |---|---|
-| One band | 0.27 |
-| Two bands, 2 ms lookahead | 0.26 |
+| One band | 0.25 |
+| Two bands, 2 ms lookahead | 0.24 |
 
 
 ## Notes

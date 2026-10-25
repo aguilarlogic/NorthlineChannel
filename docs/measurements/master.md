@@ -155,19 +155,19 @@ EBU Tech 3341 minimum-requirement signals (stereo cases generated here; cases 6 
 
 ## CPU cost
 
-Percentage of one core (best of several runs), stereo, 64-sample blocks, loud pink noise, flush-to-zero on. The MeterHub target is 0.05% at 48 kHz stereo.
+Percentage of one core (thread CPU time, best of several runs), stereo, 64-sample blocks, loud pink noise, flush-to-zero on. The MeterHub target is 0.05% at 48 kHz stereo.
 
 | Configuration | 48 kHz | 96 kHz |
 |---|---|---|
-| MeterHub, stereo, peaks at -1 dBFS | 0.088 % | 0.150 % |
-| MeterHub, stereo, peaks at -20 dBFS | 0.097 % | 0.197 % |
-| MeterHub, mono, peaks at -1 dBFS | 0.114 % | 0.105 % |
-| MasterSection (limiter + MeterHub), Safety Clip Eco, LIMIT on, +10 dB drive | 0.241 % | 0.392 % |
-| MasterSection, Safety Clip Eco, LIMIT off | 0.070 % | 0.128 % |
-| MasterSection (limiter + MeterHub), Safety Clip HQ, LIMIT on, +10 dB drive | 0.985 % | 1.916 % |
-| MasterSection, Safety Clip HQ, LIMIT off | 0.063 % | 0.121 % |
-| MasterSection (limiter + MeterHub), Brickwall, LIMIT on, +10 dB drive | 0.137 % | 0.228 % |
-| MasterSection, Brickwall, LIMIT off | 0.066 % | 0.126 % |
-| MasterSection (limiter + MeterHub), True Peak, LIMIT on, +10 dB drive | 0.419 % | 0.642 % |
-| MasterSection, True Peak, LIMIT off | 0.065 % | 0.124 % |
+| MeterHub, stereo, peaks at -1 dBFS | 0.041 % | 0.073 % |
+| MeterHub, stereo, peaks at -20 dBFS | 0.041 % | 0.072 % |
+| MeterHub, mono, peaks at -1 dBFS | 0.026 % | 0.048 % |
+| MasterSection (limiter + MeterHub), Safety Clip Eco, LIMIT on, +10 dB drive | 0.187 % | 0.357 % |
+| MasterSection, Safety Clip Eco, LIMIT off | 0.053 % | 0.097 % |
+| MasterSection (limiter + MeterHub), Safety Clip HQ, LIMIT on, +10 dB drive | 0.944 % | 1.874 % |
+| MasterSection, Safety Clip HQ, LIMIT off | 0.051 % | 0.094 % |
+| MasterSection (limiter + MeterHub), Brickwall, LIMIT on, +10 dB drive | 0.099 % | 0.189 % |
+| MasterSection, Brickwall, LIMIT off | 0.054 % | 0.098 % |
+| MasterSection (limiter + MeterHub), True Peak, LIMIT on, +10 dB drive | 0.342 % | 0.582 % |
+| MasterSection, True Peak, LIMIT off | 0.054 % | 0.099 % |
 

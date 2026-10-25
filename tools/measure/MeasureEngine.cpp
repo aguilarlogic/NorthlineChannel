@@ -91,8 +91,8 @@ void latencyTable (MeasureReport& r)
     r.h2 ("Latency per configuration (48 kHz)");
     r.para ("Reported = what the plug-in tells the host after `updateLatency()`. Measured = position of the peak of a 0.25 impulse through the whole processor. "
             "They must be equal, and the module on/off state must not change them. Rows with all modules on use settings that are transparent "
-            "(no filtering, no gain change), so the peak position is a pure delay. A row that applies real filtering would show the filters' own group delay "
-            "(for example the minimum-phase IIR half-band of the HQ oversampler, which PRE does not report yet).");
+            "(no filtering, no gain change), so the peak position is a pure delay. A row that applies real filtering would also show the filters' own group delay. "
+            "The HQ oversampler is linear-phase, and its delay is part of the reported PRE latency.");
     r.table ({ "Configuration", "Reported (samples)", "Measured (samples)", "Equal" });
 
     const auto transparentOn = [] (NorthlineProcessor& p)

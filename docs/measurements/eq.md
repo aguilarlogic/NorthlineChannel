@@ -2,7 +2,7 @@
 
 EQ: static band accuracy against the analog prototype (all types, fc, gain, Q, fs), old vs new design, dynamic bands, display vs DSP, CPU
 
-Build: Oct 23 2026, AMD Ryzen 7 9800X3D 8-Core Processor
+Build: Oct 24 2026, AMD Ryzen 7 9800X3D 8-Core Processor
 
 ## 1. Static bands against the analog prototype
 
@@ -91,14 +91,14 @@ Magnitude error of the digital band against the analog RBJ prototype (same gain,
 
 | Type | Designs | Mean (us) | Max (us) | Closed form (%) | 3-value refinement (%) | 5-value refinement (%) | Fallback (%) |
 |---|---|---|---|---|---|---|---|
-| Low shelf (Q 0.71) | 2700 | 4.3 | 153.5 | 90.7 | 6.2 | 3.1 | 0.00 |
-| Low resonant shelf (Q 1.5) | 2700 | 10.3 | 187.7 | 77.4 | 13.1 | 9.5 | 0.00 |
-| High shelf (Q 0.71) | 2700 | 4.4 | 154.3 | 90.7 | 6.2 | 3.1 | 0.00 |
-| High resonant shelf (Q 1.5) | 2700 | 10.3 | 326.7 | 77.4 | 13.1 | 9.5 | 0.00 |
-| Bell wide (Mid, Q 0.55) | 2700 | 15.6 | 272.9 | 71.1 | 14.9 | 14.0 | 0.00 |
-| Bell narrow (Mid, Q 2.5) | 2700 | 8.0 | 149 | 84.7 | 9.3 | 6.0 | 0.00 |
-| Bell parametric (Q 0.2 to 10) | 16200 | 10.7 | 530 | 79.1 | 11.8 | 9.1 | 0.00 |
-| Bell parametric, Proportional | 16200 | 8.4 | 282 | 83.6 | 9.9 | 6.5 | 0.00 |
+| Low shelf (Q 0.71) | 2700 | 4.3 | 155.7 | 90.7 | 6.2 | 3.1 | 0.00 |
+| Low resonant shelf (Q 1.5) | 2700 | 10.0 | 156.5 | 77.4 | 13.1 | 9.5 | 0.00 |
+| High shelf (Q 0.71) | 2700 | 4.3 | 153.7 | 90.7 | 6.2 | 3.1 | 0.00 |
+| High resonant shelf (Q 1.5) | 2700 | 9.9 | 145.7 | 77.4 | 13.1 | 9.5 | 0.00 |
+| Bell wide (Mid, Q 0.55) | 2700 | 15.1 | 151.5 | 71.1 | 14.9 | 14.0 | 0.00 |
+| Bell narrow (Mid, Q 2.5) | 2700 | 7.9 | 147.7 | 84.7 | 9.3 | 6.0 | 0.00 |
+| Bell parametric (Q 0.2 to 10) | 16200 | 10.6 | 375.9 | 79.1 | 11.8 | 9.1 | 0.00 |
+| Bell parametric, Proportional | 16200 | 8.2 | 274.8 | 83.6 | 9.9 | 6.5 | 0.00 |
 
 Stage 1 is the closed form; a stage above it means the closed form missed the tolerance on the solver grid and the refinement ran (only at parameter changes, never per tick when nothing moved).
 
@@ -179,14 +179,14 @@ One EQ instance, stereo, 10 s of white noise at -20 dBFS RMS, 64-sample blocks w
 | Configuration | fs | CPU (% of one core) | Budget |
 |---|---|---|---|
 | All four bands off | 48 kHz | 0.0050 | - |
-| 4 static bands, steady | 48 kHz | 0.0606 | - |
-| 4 static bands, gains gliding (6 dB every 1024 samples) | 48 kHz | 0.7253 | within 1 % (glide target) |
-| 4 dynamic bands, steady detection | 48 kHz | 0.1359 | within 0.15 % |
-| 4 dynamic bands, gains gliding | 48 kHz | 0.8037 | within 1 % (glide target) |
-| All four bands off | 96 kHz | 0.0099 | - |
-| 4 static bands, steady | 96 kHz | 0.1209 | - |
-| 4 static bands, gains gliding (6 dB every 1024 samples) | 96 kHz | 1.4318 | over 1 % (glide target) |
-| 4 dynamic bands, steady detection | 96 kHz | 0.2696 | over 0.15 % |
+| 4 static bands, steady | 48 kHz | 0.0601 | - |
+| 4 static bands, gains gliding (6 dB every 1024 samples) | 48 kHz | 0.7167 | within 1 % (glide target) |
+| 4 dynamic bands, steady detection | 48 kHz | 0.1345 | within 0.15 % |
+| 4 dynamic bands, gains gliding | 48 kHz | 0.7921 | within 1 % (glide target) |
+| All four bands off | 96 kHz | 0.0100 | - |
+| 4 static bands, steady | 96 kHz | 0.1206 | - |
+| 4 static bands, gains gliding (6 dB every 1024 samples) | 96 kHz | 1.4203 | over 1 % (glide target) |
+| 4 dynamic bands, steady detection | 96 kHz | 0.2678 | over 0.15 % |
 | 4 dynamic bands, gains gliding | 96 kHz | 1.5953 | over 1 % (glide target) |
 
 
@@ -196,8 +196,8 @@ One EQ instance, stereo, 10 s of white noise at -20 dBFS RMS, 64-sample blocks w
 |---|---|
 | Refinement designs per tick, maximum | 1 (budget 1) |
 | Refinement designs in 2.5 s | 488 |
-| Processing time per tick, maximum (us) | 156.6 |
-| Processing time per tick, mean (us) | 3.43 |
+| Processing time per tick, maximum (us) | 41.1 |
+| Processing time per tick, mean (us) | 3.32 |
 | Tick budget at 48 kHz (32 samples, us) | 666.7 |
 
 Time is the wall clock of one 32-sample process call including the design work of that tick. The maximum includes the first tick's start-up and the timer resolution.
