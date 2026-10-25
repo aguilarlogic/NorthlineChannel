@@ -1218,15 +1218,76 @@ void sectionCompare (Ctx& c)
 }
 
 //==============================================================================
-// 9. Long run: counters near 2^31 and 2^32 must wrap without a discontinuity, NaN or state jump.
-//    Not run here. The strip keeps no absolute sample count: ControlClock::phase is always below
-//    kControlBlock, so there is nothing to seed. The uint32 counters that can wrap (ChannelStrip::ringGeneration,
-//    ChannelStrip::paramUpdates, MeterHub::sequenceCounter) and LevelMatch's hopsSeen need a test seam. See the report.
+// 9. Long run: counters near 2^31 and 2^32 must wrap without a discontinuity, NaN or state jump. The tool-only
+//    seams start the strip's control clock just below each wrap (on a control-block boundary, so the phase is
+//    unchanged) and place the ring generation, the parameter update counters and the meter sequence near 2^32.
+//    The output must equal an unseeded render bit for bit. tools/tests/TestWrap.cpp checks each counter alone.
 void sectionLongRun (Ctx& c)
 {
     beginSection (c, "longrun");
-    skip (c, "longrun.wrap_2e31", "needs a test seam: the strip has no absolute sample or clock counter (ControlClock::phase is below kControlBlock)");
-    skip (c, "longrun.wrap_2e32", "needs a test seam for ChannelStrip::ringGeneration, paramUpdates and MeterHub::sequenceCounter");
+    if (c.hosted)
+    {
+        skip (c, "longrun.wrap_2e31", "the counter seams are NorthlineProcessor API, not reachable through a hosted VST3");
+        skip (c, "longrun.wrap_2e32", "as above");
+        endSection (c);
+        return;
+    }
+    constexpr double fs = 48000.0;
+    constexpr int block = 256, blocks = 400;
+    const int on[] { P::preOn, P::satOn, P::hpOn, P::lpOn, P::weightOn, P::gateOn, P::dsOn, P::ds1On, P::ds2On,
+                     P::eqOn, P::eqLowOn, P::eqMidOn, P::eqToneOn, P::eqHighOn, P::compOn, P::limOn };
+
+    // Everything on, seeded noise, a parameter change at blocks 100 and 200 (so the update counters move).
+    auto render = [&] (uint32_t clockSeed, bool seedCounters, bool& finite) {
+        std::vector<float> y;
+        auto d = makeDut (c);
+        if (d.ap == nullptr || ! applyLayout (*d.ap, kLayouts[0], false)) { finite = false; return y; }
+        for (int i : on) setIndex (d, i, 1);
+        d.ap->prepareToPlay (fs, block);
+        auto& strip = d.nl->getStrip();
+        if (clockSeed != 0) strip.seedClockForTest (clockSeed);
+        if (seedCounters)
+        {
+            strip.seedCountersForTest (0xfffffff0u, 0xfffffff0u);
+            strip.meterHub().seedCountersForTest (0xfffffff0u, 0xfffffff0u, 0xfffffff0ull, 0);
+        }
+        juce::Random rng ((juce::int64) c.seed);
+        juce::AudioBuffer<float> buf (2, block);
+        y.reserve ((size_t) blocks * block);
+        for (int b = 0; b < blocks; ++b)
+        {
+            if (b == 100) setIndex (d, P::hpOn, 0);
+            if (b == 200) setIndex (d, P::hpOn, 1);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < block; ++i) buf.setSample (ch, i, (rng.nextFloat() * 2.0f - 1.0f) * 0.25f);
+            audioCall (*d.ap, buf);
+            for (int i = 0; i < block; ++i)
+            {
+                const float v = buf.getSample (0, i);
+                finite = finite && std::isfinite (v);
+                y.push_back (v);
+            }
+        }
+        return y;
+    };
+    auto maxDiff = [] (const std::vector<float>& a, const std::vector<float>& b) {
+        if (a.size() != b.size() || a.empty()) return 1.0;
+        double m = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) m = std::max (m, (double) std::abs (a[i] - b[i]));
+        return m;
+    };
+
+    bool finite = true;
+    const auto ref = render (0, false, finite);
+    const auto at31 = render (0x7fffffc0u, false, finite);
+    const auto at32 = render (0xffffffc0u, true, finite);
+    const double d31 = maxDiff (ref, at31), d32 = maxDiff (ref, at32);
+    record (c, "longrun.wrap_2e31", finite && d31 == 0.0,
+            fmt ("clock seeded 64 samples below 2^31, everything on: max difference %.3g from an unseeded render, seed=%u",
+                 d31, (unsigned) c.seed));
+    record (c, "longrun.wrap_2e32", finite && d32 == 0.0,
+            fmt ("clock, ring generation, update counters and meter sequence seeded below 2^32: max difference %.3g, seed=%u",
+                 d32, (unsigned) c.seed));
     endSection (c);
 }
 

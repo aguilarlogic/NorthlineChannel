@@ -254,7 +254,7 @@ void PreDisplay::paintFilters (juce::Graphics& g, juce::Rectangle<float> a) cons
     auto yFor = [&] (float db) { return plot.getY() + plot.getHeight() * (kFilterTopDb - db) / (kFilterTopDb - kFilterBottomDb); };
 
     g.setColour (colours::edge.withAlpha (0.6f));
-    for (float hz : { 100.0, 1000.0, 10000.0 }) g.drawVerticalLine ((int) xFor (hz), plot.getY(), plot.getBottom());
+    for (double hz : { 100.0, 1000.0, 10000.0 }) g.drawVerticalLine ((int) xFor (hz), plot.getY(), plot.getBottom());
     g.drawHorizontalLine ((int) yFor (0.0f), plot.getX(), plot.getRight());
 
     if (! lastPre.hpOn && ! lastPre.lpOn)
